@@ -1,5 +1,5 @@
 # ============================================================================
-# streamlit_app.py — Rule-Based + All ML Models (GitHub Root Load)
+# streamlit_app.py — Rule-Based + All ML Models (Local Files + GitHub fallback)
 # ============================================================================
 
 import streamlit as st
@@ -12,6 +12,7 @@ import joblib
 import requests
 from io import BytesIO
 from collections import Counter
+from difflib import SequenceMatcher
 
 from style_matrix_classifier import analyze_text
 
@@ -68,11 +69,15 @@ st.markdown(
 
 
 # ============================================================================
-# MODEL CONFIG — GITHUB ROOT (NO models/ folder)
+# CONFIG
 # ============================================================================
 
+# Directory of THIS script — .pkl files are expected HERE, next to it
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# GitHub fallback (only used if local files are missing)
 GITHUB_RAW_BASE = (
-    "https://media.githubusercontent.com/media/meeras-boob/"
+    "https://raw.githubusercontent.com/meeras-boob/"
     "Gujarati_Visvakosh_vs_Wikipedia_check_content/main"
 )
 
@@ -101,51 +106,7 @@ DENSE_ONLY = {'KNN', 'SVC_RBF', 'MLP', 'LDA', 'DecisionTree'}
 
 
 # ============================================================================
-# 🔬 DEBUG PANEL — Test GitHub connectivity
-# ============================================================================
-
-with st.expander("🔬 Debug — Test GitHub Connectivity", expanded=False):
-    st.caption(
-        "If models aren't loading, click the button below. "
-        "It will show you the **exact HTTP status** for a few test files."
-    )
-    if st.button("🧪 Test a few model URLs", key="test_github_btn"):
-        test_files = ["AdaBoost.pkl", "LogisticRegression.pkl",
-                      "SVC_RBF.pkl", "KNN.pkl"]
-        rows = []
-        for f in test_files:
-            url = f"{GITHUB_RAW_BASE}/{f}"
-            try:
-                r = requests.get(url, timeout=30)
-                rows.append({
-                    "file": f,
-                    "status": r.status_code,
-                    "size_bytes": len(r.content),
-                    "url_ok": "✓" if r.status_code == 200 else "✗",
-                })
-            except Exception as e:
-                rows.append({
-                    "file": f,
-                    "status": f"ERR: {type(e).__name__}",
-                    "size_bytes": 0,
-                    "url_ok": "✗",
-                })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True)
-        ok = sum(1 for r in rows if r["status"] == 200)
-        if ok == len(rows):
-            st.success(f"✅ All {ok} test files reachable from Streamlit!")
-        elif ok > 0:
-            st.warning(f"⚠️ Only {ok}/{len(rows)} reachable")
-        else:
-            st.error(
-                "❌ No files reachable. This usually means:\n"
-                "1. GitHub raw URLs are blocked by network\n"
-                "2. OR filenames in repo have hidden spaces/case issues"
-            )
-
-
-# ============================================================================
-# TOKENIZER (must match training)
+# TOKENIZER
 # ============================================================================
 
 class GujaratiTokenizer:
@@ -169,7 +130,7 @@ class GujaratiTokenizer:
 
 
 # ============================================================================
-# FEATURE EXTRACTION (matches training)
+# FEATURE EXTRACTION
 # ============================================================================
 
 class StyleMatrixExtractor:
@@ -231,9 +192,7 @@ class StyleMatrixExtractor:
         feats['v_markers_per_1000'] = (v_c / wc) * 1000
         feats['w_markers_per_1000'] = (w_c / wc) * 1000
         feats['marker_diff_per_1000'] = ((v_c - w_c) / wc) * 1000
-        feats['marker_ratio_v'] = (
-            v_c / (v_c + w_c) if (v_c + w_c) > 0 else 0.5
-        )
+        feats['marker_ratio_v'] = (v_c / (v_c + w_c)) if (v_c + w_c) > 0 else 0.5
 
         for m in ['તથા', 'વળી', 'કહેવાય છે', 'એટલે', 'કરાય છે',
                   'શામેલ', 'દ્વારા', 'સક્ષમ', 'ઉલ્લેખ', 'કરવામાં આવે છે']:
@@ -248,9 +207,7 @@ class StyleMatrixExtractor:
 
         feats['colon_per_1000'] = (text.count(':') / wc) * 1000
         feats['comma_per_1000'] = (text.count(',') / wc) * 1000
-        feats['paren_per_1000'] = (
-            (text.count('(') + text.count(')')) / wc
-        ) * 1000
+        feats['paren_per_1000'] = ((text.count('(') + text.count(')')) / wc) * 1000
         feats['danda_per_1000'] = (text.count('।') / wc) * 1000
 
         first_200 = text[:200]
@@ -262,9 +219,7 @@ class StyleMatrixExtractor:
         feats['hyphen_count'] = text.count('-')
         feats['hyphen_per_1000'] = (text.count('-') / wc) * 1000
         feats['space_comma_count'] = len(re.findall(r'\s,', text))
-        feats['space_comma_per_1000'] = (
-            feats['space_comma_count'] / wc
-        ) * 1000
+        feats['space_comma_per_1000'] = (feats['space_comma_count'] / wc) * 1000
         feats['comma_ratio'] = text.count(',') / max(text.count('.'), 1)
 
         return feats
@@ -281,10 +236,9 @@ class StyleMatrixExtractor:
             'm_તથા': 0, 'm_વળી': 0, 'm_કહેવાય_છે': 0, 'm_એટલે': 0,
             'm_કરાય_છે': 0, 'm_શામેલ': 0, 'm_દ્વારા': 0, 'm_સક્ષમ': 0,
             'm_ઉલ્લેખ': 0, 'm_કરવામાં_આવે_છે': 0,
-            'english_char_ratio': 0, 'gujarati_char_ratio': 0,
-            'script_ratio': 0, 'colon_per_1000': 0, 'comma_per_1000': 0,
-            'paren_per_1000': 0, 'danda_per_1000': 0,
-            'colon_in_first_200': 0, 'def_in_first_200': 0,
+            'english_char_ratio': 0, 'gujarati_char_ratio': 0, 'script_ratio': 0,
+            'colon_per_1000': 0, 'comma_per_1000': 0, 'paren_per_1000': 0,
+            'danda_per_1000': 0, 'colon_in_first_200': 0, 'def_in_first_200': 0,
             'hyphen_count': 0, 'hyphen_per_1000': 0,
             'space_comma_count': 0, 'space_comma_per_1000': 0,
             'comma_ratio': 0,
@@ -292,61 +246,103 @@ class StyleMatrixExtractor:
 
 
 # ============================================================================
-# LOAD ALL ML MODELS — GitHub root only, cache in session_state
+# LOAD MODELS — LOCAL FOLDER FIRST, GITHUB FALLBACK
 # ============================================================================
 
-def fetch_one_model(fname, timeout=30):
-    """Fetch one model. Returns (bundle_or_None, status_msg)."""
+def try_load_local(fname):
+    """Try to load from same directory as this script."""
+    path = os.path.join(SCRIPT_DIR, fname)
+    if not os.path.exists(path):
+        return None, f"not found at {path}"
+    try:
+        if os.path.getsize(path) < 100:
+            return None, f"file too small ({os.path.getsize(path)} bytes)"
+        data = joblib.load(path)
+        return data, None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {str(e)[:80]}"
+
+
+def try_load_github(fname, timeout=20):
+    """Fallback: try to load from GitHub raw URL."""
     url = f"{GITHUB_RAW_BASE}/{fname}"
     try:
         r = requests.get(url, timeout=timeout)
         if r.status_code != 200:
             return None, f"HTTP {r.status_code}"
         if len(r.content) < 100:
-            return None, f"Too small ({len(r.content)} bytes)"
+            return None, f"too small ({len(r.content)} bytes)"
         data = joblib.load(BytesIO(r.content))
-        name = data.get("model_name", fname.replace(".pkl", ""))
-        bundle = {
-            "model": data["model"],
-            "pipeline": data["feature_pipeline"],
-            "cv_f1": data.get("metrics", {}).get("cv_mean", 0.0),
-            "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
-            "val_v_ok": data.get("val_v_ok", False),
-            "val_w_ok": data.get("val_w_ok", False),
-            "source": "github",
-        }
-        return (name, bundle), f"✓ {name}"
-    except requests.exceptions.Timeout:
-        return None, f"TIMEOUT"
-    except requests.exceptions.ConnectionError:
-        return None, f"CONNECTION REFUSED (network blocked?)"
-    except KeyError as e:
-        return None, f"Missing key in .pkl: {e}"
+        return data, None
     except Exception as e:
         return None, f"{type(e).__name__}: {str(e)[:80]}"
 
 
 def load_all_ml_models():
-    """Load every model. Returns (models, status_list)."""
+    """Load all .pkl files — local first, then GitHub."""
     models = {}
-    status = []  # list of (filename, is_ok, msg)
+    status = []  # (filename, source, is_ok, msg)
+
     for fname in MODEL_FILES:
-        result, msg = fetch_one_model(fname)
-        if result is None:
-            status.append((fname, False, msg))
-        else:
-            name, bundle = result
-            models[name] = bundle
-            status.append((fname, True, msg))
+        # Try local first
+        data, err = try_load_local(fname)
+
+        if data is not None:
+            try:
+                name = data.get("model_name", fname.replace(".pkl", ""))
+                models[name] = {
+                    "model": data["model"],
+                    "pipeline": data["feature_pipeline"],
+                    "cv_f1": data.get("metrics", {}).get("cv_mean", 0.0),
+                    "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
+                    "val_v_ok": data.get("val_v_ok", False),
+                    "val_w_ok": data.get("val_w_ok", False),
+                    "source": "local",
+                }
+                status.append((fname, "local", True, name))
+                continue
+            except KeyError as e:
+                status.append((fname, "local", False, f"Missing key: {e}"))
+                continue
+            except Exception as e:
+                status.append((fname, "local", False,
+                               f"{type(e).__name__}: {str(e)[:80]}"))
+                continue
+
+        # Local failed → try GitHub
+        data, err = try_load_github(fname)
+
+        if data is not None:
+            try:
+                name = data.get("model_name", fname.replace(".pkl", ""))
+                models[name] = {
+                    "model": data["model"],
+                    "pipeline": data["feature_pipeline"],
+                    "cv_f1": data.get("metrics", {}).get("cv_mean", 0.0),
+                    "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
+                    "val_v_ok": data.get("val_v_ok", False),
+                    "val_w_ok": data.get("val_w_ok", False),
+                    "source": "github",
+                }
+                status.append((fname, "github", True, name))
+                continue
+            except Exception as e:
+                status.append((fname, "github", False,
+                               f"{type(e).__name__}: {str(e)[:80]}"))
+                continue
+
+        # Both failed
+        status.append((fname, "none", False, err))
+
     return models, status
 
 
-# Load once, keep in session_state so we can reload on demand
+# Load into session_state so we can reload on demand
 if "ml_models" not in st.session_state:
-    with st.spinner("🔄 Downloading models from GitHub..."):
-        _models, _status = load_all_ml_models()
-    st.session_state["ml_models"] = _models
-    st.session_state["ml_status"] = _status
+    with st.spinner("🔄 Loading models..."):
+        _m, _s = load_all_ml_models()
+    st.session_state["ml_models"] = _m
+    st.session_state["ml_status"] = _s
 
 ALL_ML_MODELS = st.session_state["ml_models"]
 LOAD_STATUS   = st.session_state["ml_status"]
@@ -389,31 +385,29 @@ with st.sidebar:
         st.session_state.pop("ml_status", None)
         st.rerun()
 
-    ok_count  = sum(1 for _, ok, _ in LOAD_STATUS if ok)
-    err_count = sum(1 for _, ok, _ in LOAD_STATUS if not ok)
+    ok_count  = sum(1 for _, _, ok, _ in LOAD_STATUS if ok)
+    err_count = sum(1 for _, _, ok, _ in LOAD_STATUS if not ok)
 
     if ok_count:
         st.success(f"✅ {ok_count} loaded")
     if err_count:
         st.error(f"❌ {err_count} failed")
 
-    with st.expander(f"✅ Loaded ({ok_count})", expanded=(ok_count == 0)):
-        for fname, ok, msg in LOAD_STATUS:
+    with st.expander(f"✅ Loaded ({ok_count})", expanded=True):
+        for fname, src, ok, msg in LOAD_STATUS:
             if ok:
-                st.write(f"✓ `{fname}` → **{msg.replace('✓ ', '')}**")
+                st.write(f"✓ `{fname}` ({src}) → **{msg}**")
 
     if err_count:
         with st.expander(f"❌ Failed ({err_count})", expanded=True):
-            for fname, ok, msg in LOAD_STATUS:
+            for fname, src, ok, msg in LOAD_STATUS:
                 if not ok:
                     st.write(f"❌ `{fname}`")
                     st.caption(f"↳ {msg}")
-            st.info(
-                "If it says **CONNECTION REFUSED** or **TIMEOUT**, "
-                "Streamlit Cloud is blocking GitHub. Use the top "
-                "**🔬 Debug** panel to confirm. If it says **HTTP 404**, "
-                "the filename in the repo doesn't match."
-            )
+
+    st.markdown("---")
+    st.caption(f"📁 Script dir: `{SCRIPT_DIR}`")
+    st.caption(f"📦 .pkl files found locally: {ok_count}")
 
 
 # ============================================================================
@@ -790,11 +784,10 @@ if analyze_btn:
 
     if not ALL_ML_MODELS:
         st.error(
-            "⚠️ **0 ML models loaded.** Scroll to sidebar → "
-            "**🤖 ML Models Status** → **❌ Failed** expander to see "
-            "the exact reason per file.\n\n"
-            "**Also click** the **🔬 Debug — Test GitHub Connectivity** "
-            "button at the top of the page to confirm Streamlit can reach GitHub."
+            f"⚠️ **0 ML models loaded.**\n\n"
+            f"Script directory: `{SCRIPT_DIR}`\n\n"
+            f"**Expected to find `.pkl` files there.**\n\n"
+            "Check the sidebar **❌ Failed** expander for details."
         )
     else:
         with st.spinner(f"Running {len(ALL_ML_MODELS)} ML models..."):
