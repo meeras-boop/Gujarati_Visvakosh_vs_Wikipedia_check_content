@@ -71,38 +71,77 @@ st.markdown(
 # MODEL CONFIG — GITHUB ROOT (NO models/ folder)
 # ============================================================================
 
-# 👇 YOUR GITHUB REPO — models sit at the ROOT of main branch
-GITHUB_RAW_BASE = os.environ.get(
-    "GITHUB_RAW_BASE",
+GITHUB_RAW_BASE = (
     "https://raw.githubusercontent.com/meeras-boob/"
     "Gujarati_Visvakosh_vs_Wikipedia_check_content/main"
-).rstrip("/")
+)
 
-# Exact filenames as they appear in your repo root (case-sensitive!)
 MODEL_FILES = [
-    "LogisticRegression.pkl",
-    "LogisticRegression_L1.pkl",
-    "LinearSVC.pkl",
-    "SGDClassifier.pkl",
-    "RidgeClassifier.pkl",
-    "PassiveAggressive.pkl",
-    "Perceptron.pkl",
-    "SVC_Linear.pkl",
-    "SVC_RBF.pkl",
-    "MultinomialNB.pkl",
-    "ComplementNB.pkl",
+    "AdaBoost.pkl",
     "BernoulliNB.pkl",
     "DecisionTree.pkl",
-    "RandomForest.pkl",
     "ExtraTrees.pkl",
-    "GradientBoosting.pkl",
-    "AdaBoost.pkl",
     "KNN.pkl",
-    "MLP.pkl",
     "LDA.pkl",
+    "LinearSVC.pkl",
+    "LogisticRegression.pkl",
+    "LogisticRegression_L1.pkl",
+    "MLP.pkl",
+    "PassiveAggressive.pkl",
+    "Perceptron.pkl",
+    "RandomForest.pkl",
+    "RidgeClassifier.pkl",
+    "SGDClassifier.pkl",
+    "SVC_Linear.pkl",
+    "SVC_RBF.pkl",
+    "GradientBoosting.pkl",
 ]
 
 DENSE_ONLY = {'KNN', 'SVC_RBF', 'MLP', 'LDA', 'DecisionTree'}
+
+
+# ============================================================================
+# 🔬 DEBUG PANEL — Test GitHub connectivity
+# ============================================================================
+
+with st.expander("🔬 Debug — Test GitHub Connectivity", expanded=False):
+    st.caption(
+        "If models aren't loading, click the button below. "
+        "It will show you the **exact HTTP status** for a few test files."
+    )
+    if st.button("🧪 Test a few model URLs", key="test_github_btn"):
+        test_files = ["AdaBoost.pkl", "LogisticRegression.pkl",
+                      "SVC_RBF.pkl", "KNN.pkl"]
+        rows = []
+        for f in test_files:
+            url = f"{GITHUB_RAW_BASE}/{f}"
+            try:
+                r = requests.get(url, timeout=30)
+                rows.append({
+                    "file": f,
+                    "status": r.status_code,
+                    "size_bytes": len(r.content),
+                    "url_ok": "✓" if r.status_code == 200 else "✗",
+                })
+            except Exception as e:
+                rows.append({
+                    "file": f,
+                    "status": f"ERR: {type(e).__name__}",
+                    "size_bytes": 0,
+                    "url_ok": "✗",
+                })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True)
+        ok = sum(1 for r in rows if r["status"] == 200)
+        if ok == len(rows):
+            st.success(f"✅ All {ok} test files reachable from Streamlit!")
+        elif ok > 0:
+            st.warning(f"⚠️ Only {ok}/{len(rows)} reachable")
+        else:
+            st.error(
+                "❌ No files reachable. This usually means:\n"
+                "1. GitHub raw URLs are blocked by network\n"
+                "2. OR filenames in repo have hidden spaces/case issues"
+            )
 
 
 # ============================================================================
@@ -125,7 +164,8 @@ class GujaratiTokenizer:
         if not text:
             return []
         t = text.replace('।', '.')
-        return [s.strip() for s in re.split(r'(?<=[.!?])\s+', t) if len(s.strip()) > 2]
+        return [s.strip() for s in re.split(r'(?<=[.!?])\s+', t)
+                if len(s.strip()) > 2]
 
 
 # ============================================================================
@@ -179,15 +219,21 @@ class StyleMatrixExtractor:
         uniq = set(words)
         feats['type_token_ratio'] = len(uniq) / wc
         word_freq = Counter(words)
-        feats['hapax_ratio'] = sum(1 for c in word_freq.values() if c == 1) / max(len(uniq), 1)
-        feats['dis_ratio'] = sum(1 for c in word_freq.values() if c == 2) / max(len(uniq), 1)
+        feats['hapax_ratio'] = (
+            sum(1 for c in word_freq.values() if c == 1) / max(len(uniq), 1)
+        )
+        feats['dis_ratio'] = (
+            sum(1 for c in word_freq.values() if c == 2) / max(len(uniq), 1)
+        )
 
         v_c = sum(text.count(m) for m in self.v_markers)
         w_c = sum(text.count(m) for m in self.w_markers)
         feats['v_markers_per_1000'] = (v_c / wc) * 1000
         feats['w_markers_per_1000'] = (w_c / wc) * 1000
         feats['marker_diff_per_1000'] = ((v_c - w_c) / wc) * 1000
-        feats['marker_ratio_v'] = v_c / (v_c + w_c) if (v_c + w_c) > 0 else 0.5
+        feats['marker_ratio_v'] = (
+            v_c / (v_c + w_c) if (v_c + w_c) > 0 else 0.5
+        )
 
         for m in ['તથા', 'વળી', 'કહેવાય છે', 'એટલે', 'કરાય છે',
                   'શામેલ', 'દ્વારા', 'સક્ષમ', 'ઉલ્લેખ', 'કરવામાં આવે છે']:
@@ -202,7 +248,9 @@ class StyleMatrixExtractor:
 
         feats['colon_per_1000'] = (text.count(':') / wc) * 1000
         feats['comma_per_1000'] = (text.count(',') / wc) * 1000
-        feats['paren_per_1000'] = ((text.count('(') + text.count(')')) / wc) * 1000
+        feats['paren_per_1000'] = (
+            (text.count('(') + text.count(')')) / wc
+        ) * 1000
         feats['danda_per_1000'] = (text.count('।') / wc) * 1000
 
         first_200 = text[:200]
@@ -214,7 +262,9 @@ class StyleMatrixExtractor:
         feats['hyphen_count'] = text.count('-')
         feats['hyphen_per_1000'] = (text.count('-') / wc) * 1000
         feats['space_comma_count'] = len(re.findall(r'\s,', text))
-        feats['space_comma_per_1000'] = (feats['space_comma_count'] / wc) * 1000
+        feats['space_comma_per_1000'] = (
+            feats['space_comma_count'] / wc
+        ) * 1000
         feats['comma_ratio'] = text.count(',') / max(text.count('.'), 1)
 
         return feats
@@ -231,9 +281,10 @@ class StyleMatrixExtractor:
             'm_તથા': 0, 'm_વળી': 0, 'm_કહેવાય_છે': 0, 'm_એટલે': 0,
             'm_કરાય_છે': 0, 'm_શામેલ': 0, 'm_દ્વારા': 0, 'm_સક્ષમ': 0,
             'm_ઉલ્લેખ': 0, 'm_કરવામાં_આવે_છે': 0,
-            'english_char_ratio': 0, 'gujarati_char_ratio': 0, 'script_ratio': 0,
-            'colon_per_1000': 0, 'comma_per_1000': 0, 'paren_per_1000': 0,
-            'danda_per_1000': 0, 'colon_in_first_200': 0, 'def_in_first_200': 0,
+            'english_char_ratio': 0, 'gujarati_char_ratio': 0,
+            'script_ratio': 0, 'colon_per_1000': 0, 'comma_per_1000': 0,
+            'paren_per_1000': 0, 'danda_per_1000': 0,
+            'colon_in_first_200': 0, 'def_in_first_200': 0,
             'hyphen_count': 0, 'hyphen_per_1000': 0,
             'space_comma_count': 0, 'space_comma_per_1000': 0,
             'comma_ratio': 0,
@@ -241,71 +292,61 @@ class StyleMatrixExtractor:
 
 
 # ============================================================================
-# LOAD MODELS — GITHUB ROOT, WITH VISIBLE ERRORS
+# LOAD ALL ML MODELS — GitHub root only, cache in session_state
 # ============================================================================
 
-def fetch_model_from_github(fname, timeout=30):
-    """Download one .pkl from GitHub root. Returns (data, error_msg)."""
+def fetch_one_model(fname, timeout=30):
+    """Fetch one model. Returns (bundle_or_None, status_msg)."""
     url = f"{GITHUB_RAW_BASE}/{fname}"
     try:
         r = requests.get(url, timeout=timeout)
         if r.status_code != 200:
-            return None, f"HTTP {r.status_code} at {url}"
+            return None, f"HTTP {r.status_code}"
         if len(r.content) < 100:
-            return None, f"File too small ({len(r.content)} bytes)"
+            return None, f"Too small ({len(r.content)} bytes)"
         data = joblib.load(BytesIO(r.content))
-        return data, None
+        name = data.get("model_name", fname.replace(".pkl", ""))
+        bundle = {
+            "model": data["model"],
+            "pipeline": data["feature_pipeline"],
+            "cv_f1": data.get("metrics", {}).get("cv_mean", 0.0),
+            "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
+            "val_v_ok": data.get("val_v_ok", False),
+            "val_w_ok": data.get("val_w_ok", False),
+            "source": "github",
+        }
+        return (name, bundle), f"✓ {name}"
     except requests.exceptions.Timeout:
-        return None, f"TIMEOUT downloading {url}"
-    except requests.exceptions.ConnectionError as e:
-        return None, f"CONNECTION ERROR: {str(e)[:100]}"
+        return None, f"TIMEOUT"
+    except requests.exceptions.ConnectionError:
+        return None, f"CONNECTION REFUSED (network blocked?)"
+    except KeyError as e:
+        return None, f"Missing key in .pkl: {e}"
     except Exception as e:
-        return None, f"{type(e).__name__}: {str(e)[:150]}"
+        return None, f"{type(e).__name__}: {str(e)[:80]}"
 
 
 def load_all_ml_models():
-    """
-    Load every .pkl model from GitHub repo ROOT.
-    Returns (models_dict, status_list).
-    status_list items: (filename, 'ok'|'err', message)
-    """
+    """Load every model. Returns (models, status_list)."""
     models = {}
-    status = []
-
+    status = []  # list of (filename, is_ok, msg)
     for fname in MODEL_FILES:
-        data, err = fetch_model_from_github(fname)
-        if err is not None:
-            status.append((fname, "err", err))
-            continue
-        try:
-            name = data.get("model_name", fname.replace(".pkl", ""))
-            models[name] = {
-                "model": data["model"],
-                "pipeline": data["feature_pipeline"],
-                "cv_f1": data.get("metrics", {}).get("cv_mean", 0.0),
-                "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
-                "val_v_ok": data.get("val_v_ok", False),
-                "val_w_ok": data.get("val_w_ok", False),
-                "source": "github",
-            }
-            status.append((fname, "ok", name))
-        except KeyError as e:
-            status.append((fname, "err",
-                           f"Missing key in .pkl: {e}. "
-                           f"Keys: {list(data.keys())}"))
-        except Exception as e:
-            status.append((fname, "err",
-                           f"{type(e).__name__}: {str(e)[:150]}"))
-
+        result, msg = fetch_one_model(fname)
+        if result is None:
+            status.append((fname, False, msg))
+        else:
+            name, bundle = result
+            models[name] = bundle
+            status.append((fname, True, msg))
     return models, status
 
 
-# Load once into session_state
+# Load once, keep in session_state so we can reload on demand
 if "ml_models" not in st.session_state:
     with st.spinner("🔄 Downloading models from GitHub..."):
-        _m, _s = load_all_ml_models()
-    st.session_state["ml_models"] = _m
-    st.session_state["ml_status"] = _s
+        _models, _status = load_all_ml_models()
+    st.session_state["ml_models"] = _models
+    st.session_state["ml_status"] = _status
 
 ALL_ML_MODELS = st.session_state["ml_models"]
 LOAD_STATUS   = st.session_state["ml_status"]
@@ -319,16 +360,7 @@ with st.sidebar:
     st.header("⚙️ About")
     st.info(
         "**Rule-Based Classifier** + **ML Models Ensemble**\n\n"
-        "Uses 14 style matrix rules based on published research findings:\n"
-        "- Definition-first opening\n"
-        "- Function word markers (તથા, વળી vs શામેલ, ઘણીવાર)\n"
-        "- Transliteration style (ૉ, ૅ vs ો, ે)\n"
-        "- Passive voice style\n"
-        "- Citation markers, wiki headings\n"
-        "- Punctuation patterns\n"
-        "- Lexical diversity metrics\n\n"
-        "Plus: loads all trained ML models from GitHub and shows their "
-        "individual predictions with reasons."
+        "Uses 14 style matrix rules + all trained ML models."
     )
 
     st.markdown("---")
@@ -352,42 +384,36 @@ with st.sidebar:
     st.markdown("---")
     st.header("🤖 ML Models Status")
 
-    if st.button("🔄 Reload Models from GitHub", use_container_width=True):
+    if st.button("🔄 Reload Models", use_container_width=True, key="reload_btn"):
         st.session_state.pop("ml_models", None)
         st.session_state.pop("ml_status", None)
         st.rerun()
 
-    if "ml_models" in st.session_state:
-        models = st.session_state["ml_models"]
-        status = st.session_state["ml_status"]
-        ok_count  = sum(1 for _, s, _ in status if s == "ok")
-        err_count = sum(1 for _, s, _ in status if s == "err")
+    ok_count  = sum(1 for _, ok, _ in LOAD_STATUS if ok)
+    err_count = sum(1 for _, ok, _ in LOAD_STATUS if not ok)
 
-        if ok_count > 0:
-            st.success(f"✅ {ok_count} models loaded")
-        if err_count > 0:
-            st.error(f"❌ {err_count} failed")
+    if ok_count:
+        st.success(f"✅ {ok_count} loaded")
+    if err_count:
+        st.error(f"❌ {err_count} failed")
 
-        with st.expander(f"📋 Loaded ({ok_count})", expanded=False):
-            for fname, s, msg in status:
-                if s == "ok":
-                    st.write(f"✅ `{fname}` → **{msg}**")
+    with st.expander(f"✅ Loaded ({ok_count})", expanded=(ok_count == 0)):
+        for fname, ok, msg in LOAD_STATUS:
+            if ok:
+                st.write(f"✓ `{fname}` → **{msg.replace('✓ ', '')}**")
 
-        if err_count > 0:
-            with st.expander(f"⚠️ Failed ({err_count})", expanded=True):
-                for fname, s, msg in status:
-                    if s == "err":
-                        st.write(f"❌ `{fname}`")
-                        st.caption(f"↳ {msg}")
-                st.info(
-                    "**Common causes:**\n"
-                    "- Filename case mismatch "
-                    "(e.g., `SVC_rbf.pkl` vs `SVC_RBF.pkl`)\n"
-                    "- File has spaces/parens "
-                    "(e.g., `GradientBoosting (1).pkl`) — rename it\n"
-                    "- File not actually pushed to `main` branch\n"
-                    "- Raw URL test in browser returns 404"
-                )
+    if err_count:
+        with st.expander(f"❌ Failed ({err_count})", expanded=True):
+            for fname, ok, msg in LOAD_STATUS:
+                if not ok:
+                    st.write(f"❌ `{fname}`")
+                    st.caption(f"↳ {msg}")
+            st.info(
+                "If it says **CONNECTION REFUSED** or **TIMEOUT**, "
+                "Streamlit Cloud is blocking GitHub. Use the top "
+                "**🔬 Debug** panel to confirm. If it says **HTTP 404**, "
+                "the filename in the repo doesn't match."
+            )
 
 
 # ============================================================================
@@ -395,7 +421,6 @@ with st.sidebar:
 # ============================================================================
 
 def ml_predict_one(text, name, bundle):
-    """Run text through one ML model and generate explanation."""
     model = bundle["model"]
     pipeline = bundle["pipeline"]
 
@@ -416,7 +441,6 @@ def ml_predict_one(text, name, bundle):
         pred = model.predict(X)[0]
         out["prediction"] = "Wikipedia" if pred == 1 else "Visvakosh"
 
-        # Probabilities
         if hasattr(model, "predict_proba"):
             try:
                 p = model.predict_proba(X)[0]
@@ -426,7 +450,6 @@ def ml_predict_one(text, name, bundle):
             except Exception:
                 pass
 
-        # Fallback to decision_function
         if out["confidence"] is None and hasattr(model, "decision_function"):
             try:
                 d = float(model.decision_function(X)[0])
@@ -438,7 +461,6 @@ def ml_predict_one(text, name, bundle):
                 out["proba_v"] = 1.0 if pred == 0 else 0.0
                 out["proba_w"] = 1.0 if pred == 1 else 0.0
 
-        # ---------- REASON GENERATION ----------
         extractor = StyleMatrixExtractor()
         feats = extractor.extract(text)
         reasons, signals = [], []
@@ -446,79 +468,72 @@ def ml_predict_one(text, name, bundle):
         if pred == 1:  # Wikipedia
             if feats.get("w_markers_per_1000", 0) > feats.get("v_markers_per_1000", 0):
                 reasons.append(
-                    f"Wikipedia-specific markers dominate "
+                    f"Wikipedia markers dominate "
                     f"({feats['w_markers_per_1000']:.1f}/1000 vs "
-                    f"{feats['v_markers_per_1000']:.1f}/1000 Visvakosh)"
+                    f"{feats['v_markers_per_1000']:.1f}/1000)"
                 )
                 signals.append(f"w_markers={feats['w_markers_per_1000']:.1f}")
             if feats.get("space_comma_per_1000", 0) > 5:
                 reasons.append(
-                    f"Wikipedia-style spacing before commas detected "
+                    f"Wiki-style space before commas "
                     f"({feats['space_comma_per_1000']:.1f}/1000)"
                 )
                 signals.append(f"space_comma={feats['space_comma_per_1000']:.1f}")
             if feats.get("english_char_ratio", 0) > 0.02:
                 reasons.append(
-                    f"Frequent English insertions/glosses "
-                    f"({feats['english_char_ratio']:.1%} of chars)"
+                    f"Frequent English glosses "
+                    f"({feats['english_char_ratio']:.1%})"
                 )
                 signals.append(f"eng={feats['english_char_ratio']:.1%}")
             if feats.get("hyphen_per_1000", 0) > 3:
                 reasons.append(
-                    f"Hyphenated neologisms typical of wiki translations "
+                    f"Hyphenated neologisms "
                     f"({feats['hyphen_per_1000']:.1f}/1000)"
                 )
                 signals.append(f"hyphen={feats['hyphen_per_1000']:.1f}")
             if feats.get("colon_in_first_200", 0) == 0:
-                reasons.append("No definition-first colon in opening")
+                reasons.append("No definition-first colon")
                 signals.append("no_def_colon")
             if not reasons:
-                reasons.append(
-                    "Overall statistical profile (TF-IDF + style features) "
-                    "matches Wikipedia training data"
-                )
+                reasons.append("Statistical profile matches Wikipedia training")
         else:  # Visvakosh
             if feats.get("v_markers_per_1000", 0) > feats.get("w_markers_per_1000", 0):
                 reasons.append(
-                    f"Visvakosh function-word markers dominate "
+                    f"Visvakosh markers dominate "
                     f"({feats['v_markers_per_1000']:.1f}/1000 vs "
-                    f"{feats['w_markers_per_1000']:.1f}/1000 Wikipedia)"
+                    f"{feats['w_markers_per_1000']:.1f}/1000)"
                 )
                 signals.append(f"v_markers={feats['v_markers_per_1000']:.1f}")
             if feats.get("colon_in_first_200", 0) == 1:
-                reasons.append("Definition-first pattern (colon in first 200 chars)")
+                reasons.append("Definition-first pattern (colon in opening)")
                 signals.append("def_colon")
             if feats.get("def_in_first_200", 0) == 1:
-                reasons.append("Encyclopedic 'એટલે/કહેવાય/ગણાય' in opening")
+                reasons.append("Encyclopedic opener (એટલે/કહેવાય/ગણાય)")
                 signals.append("def_opener")
             if feats.get("danda_per_1000", 0) > 5:
                 reasons.append(
-                    f"High danda (।) punctuation usage "
+                    f"High danda (।) usage "
                     f"({feats['danda_per_1000']:.1f}/1000)"
                 )
                 signals.append(f"danda={feats['danda_per_1000']:.1f}")
             if feats.get("english_char_ratio", 0) < 0.02:
                 reasons.append(
-                    f"Low English character ratio "
-                    f"({feats['english_char_ratio']:.1%})"
+                    f"Low English ratio ({feats['english_char_ratio']:.1%})"
                 )
                 signals.append(f"eng={feats['english_char_ratio']:.1%}")
             if feats.get("hyphen_per_1000", 0) < 2:
-                reasons.append("Rare hyphenated neologisms (traditional style)")
+                reasons.append("Rare hyphenated neologisms")
                 signals.append("low_hyphen")
             if not reasons:
-                reasons.append(
-                    "Overall statistical profile matches Visvakosh training data"
-                )
+                reasons.append("Statistical profile matches Visvakosh training")
 
         conf = out["confidence"] or 0.5
         conf_word = "high" if conf > 0.85 else "moderate" if conf > 0.65 else "low"
-        reasons.append(f"Model confidence: {conf:.1%} ({conf_word})")
+        reasons.append(f"Confidence: {conf:.1%} ({conf_word})")
 
         if out["proba_v"] is not None and out["proba_w"] is not None:
             reasons.append(
-                f"Vote probabilities — Visvakosh: {out['proba_v']:.1%}, "
-                f"Wikipedia: {out['proba_w']:.1%}"
+                f"Probs — V: {out['proba_v']:.1%}, W: {out['proba_w']:.1%}"
             )
 
         out["reason"] = " • ".join(reasons)
@@ -533,7 +548,6 @@ def ml_predict_one(text, name, bundle):
 
 
 def ml_predict_all(text):
-    """Run text through all loaded ML models."""
     return [ml_predict_one(text, n, b) for n, b in ALL_ML_MODELS.items()]
 
 
@@ -599,19 +613,17 @@ if analyze_btn:
         unsafe_allow_html=True
     )
 
-    # Votes
     v = result['votes']
     c1, c2, c3 = st.columns(3)
     c1.metric("📖 Visvakosh Votes", v['visvakosh_total'])
     c2.metric("🌐 Wikipedia Votes", v['wikipedia_total'])
     c3.metric("Visvakosh Ratio", f"{v['visvakosh_ratio']:.1%}")
-
     st.progress(v['visvakosh_ratio'])
 
-    # ---- RULE-BY-RULE BREAKDOWN ----
+    # ---- RULE-BY-RULE ----
     st.markdown("---")
     st.header("📋 Rule-by-Rule Breakdown")
-    st.caption("Each rule contributes votes to Visvakosh or Wikipedia based on research thresholds")
+    st.caption("Each rule contributes votes to Visvakosh or Wikipedia")
 
     for r in result['rule_results']:
         v_votes = r['visvakosh_votes']
@@ -623,14 +635,12 @@ if analyze_btn:
         if w_votes > 0:
             st.markdown(f"**+{w_votes} Wikipedia**  {r['reason']}")
 
-    # ---- SATISFIED PROPERTIES ----
+    # ---- SATISFIED ----
     st.markdown("---")
     st.header("✅ Satisfied Style Properties")
-
     c1, c2 = st.columns(2)
-
     with c1:
-        st.subheader("📖 Visvakosh Indicators Met")
+        st.subheader("📖 Visvakosh Indicators")
         if result['visvakosh_satisfied']:
             for r in result['visvakosh_satisfied']:
                 st.markdown(
@@ -639,9 +649,8 @@ if analyze_btn:
                 )
         else:
             st.info("None met")
-
     with c2:
-        st.subheader("🌐 Wikipedia Indicators Met")
+        st.subheader("🌐 Wikipedia Indicators")
         if result['wikipedia_satisfied']:
             for r in result['wikipedia_satisfied']:
                 st.markdown(
@@ -680,22 +689,22 @@ if analyze_btn:
     with st.expander("🏷️ Marker Metrics", expanded=True):
         mm = quant['marker_metrics']
         c1, c2 = st.columns(2)
-        c1.metric("Visvakosh Markers/1000", f"{mm['visvakosh_markers_per_1000']:.2f}")
-        c2.metric("Wikipedia Markers/1000", f"{mm['wikipedia_markers_per_1000']:.2f}")
+        c1.metric("V Markers/1000", f"{mm['visvakosh_markers_per_1000']:.2f}")
+        c2.metric("W Markers/1000", f"{mm['wikipedia_markers_per_1000']:.2f}")
         st.info(f"💡 {mm['interpretation']}")
 
     with st.expander("🔊 Passive Voice Metrics", expanded=True):
         pm = quant['passive_metrics']
         c1, c2 = st.columns(2)
-        c1.metric("Visvakosh Passive/1000", f"{pm['visvakosh_passive_per_1000']:.2f}")
-        c2.metric("Wikipedia Passive/1000", f"{pm['wikipedia_passive_per_1000']:.2f}")
+        c1.metric("V Passive/1000", f"{pm['visvakosh_passive_per_1000']:.2f}")
+        c2.metric("W Passive/1000", f"{pm['wikipedia_passive_per_1000']:.2f}")
         st.info(f"💡 {pm['interpretation']}")
 
     with st.expander("🔤 Transliteration Metrics", expanded=True):
         tm = quant['transliteration_metrics']
         c1, c2 = st.columns(2)
-        c1.metric("Traditional (ૉ, ૅ, ઑ)", tm['traditional_count'])
-        c2.metric("Modern (ો, ે, ઓ)", tm['modern_count'])
+        c1.metric("Traditional", tm['traditional_count'])
+        c2.metric("Modern", tm['modern_count'])
         st.info(f"💡 {tm['interpretation']}")
 
     with st.expander("❕ Punctuation Metrics", expanded=True):
@@ -714,8 +723,8 @@ if analyze_btn:
     with st.expander("🏗️ Structural Metrics", expanded=True):
         stm = quant['structural_metrics']
         c1, c2 = st.columns(2)
-        c1.metric("Citation Markers [n]", stm['citation_count'])
-        c2.metric("Wiki Headings (== ==)", stm['wiki_heading_count'])
+        c1.metric("Citation Markers", stm['citation_count'])
+        c2.metric("Wiki Headings", stm['wiki_heading_count'])
 
     # ---- QUALITATIVE ----
     st.markdown("---")
@@ -742,7 +751,6 @@ if analyze_btn:
         g = qual['glossing_style']
         st.markdown(f"**Gloss density:** {g['gloss_density']}")
 
-    # ---- RAW FEATURES ----
     with st.expander("🔬 Raw Feature Values"):
         df = pd.DataFrame([
             {"Feature": k, "Value": v}
@@ -771,27 +779,27 @@ if analyze_btn:
     )
 
     # ========================================================================
-    # NEW SECTION — ALL ML MODELS PREDICTION + REASONING
+    # ML MODELS SECTION
     # ========================================================================
     st.markdown("---")
     st.header("🤖 ML Models — Individual Predictions & Reasoning")
     st.caption(
         "Each trained model predicts independently. "
-        "Below each model, you can see **why** it made that prediction "
-        "(based on style features + probability)."
+        "Below each model, you can see **why** it made that prediction."
     )
 
     if not ALL_ML_MODELS:
-        st.warning(
-            "⚠️ No ML models loaded. Check the sidebar **🤖 ML Models Status** "
-            "→ **⚠️ Failed** expander for the exact HTTP error per file. "
-            "Common cause: filename case mismatch or spaces in filename."
+        st.error(
+            "⚠️ **0 ML models loaded.** Scroll to sidebar → "
+            "**🤖 ML Models Status** → **❌ Failed** expander to see "
+            "the exact reason per file.\n\n"
+            "**Also click** the **🔬 Debug — Test GitHub Connectivity** "
+            "button at the top of the page to confirm Streamlit can reach GitHub."
         )
     else:
         with st.spinner(f"Running {len(ALL_ML_MODELS)} ML models..."):
             ml_results = ml_predict_all(text_input)
 
-        # --- TOP-LEVEL SUMMARY ---
         conf_v_sum = 0.0
         conf_w_sum = 0.0
         n_v, n_w = 0, 0
@@ -830,10 +838,9 @@ if analyze_btn:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("📖 Visvakosh Votes", n_v)
         c2.metric("🌐 Wikipedia Votes", n_w)
-        c3.metric("Avg Visvakosh Conf", f"{avg_v:.1%}" if avg_v else "—")
-        c4.metric("Avg Wikipedia Conf", f"{avg_w:.1%}" if avg_w else "—")
+        c3.metric("Avg V Conf", f"{avg_v:.1%}" if avg_v else "—")
+        c4.metric("Avg W Conf", f"{avg_w:.1%}" if avg_w else "—")
 
-        # --- PER-MODEL DETAILED CARDS ---
         st.markdown("### 🔍 Per-Model Predictions & Reasoning")
 
         sorted_results = sorted(
@@ -903,20 +910,15 @@ if analyze_btn:
                 unsafe_allow_html=True
             )
 
-        # --- SUMMARY TABLE ---
         st.markdown("### 📊 Summary Table")
         summary_rows = []
         for r in sorted_results:
             if r["error"]:
                 summary_rows.append({
-                    "Model": r["model"],
-                    "Prediction": "ERROR",
-                    "Confidence": "—",
-                    "Visvakosh %": "—",
-                    "Wikipedia %": "—",
-                    "CV F1": f"{r['cv_f1']:.4f}",
-                    "V-val": "—",
-                    "W-val": "—",
+                    "Model": r["model"], "Prediction": "ERROR",
+                    "Confidence": "—", "Visvakosh %": "—",
+                    "Wikipedia %": "—", "CV F1": f"{r['cv_f1']:.4f}",
+                    "V-val": "—", "W-val": "—",
                 })
             else:
                 summary_rows.append({
@@ -940,7 +942,6 @@ if analyze_btn:
             height=min(600, 40 + 35 * len(summary_rows))
         )
 
-        # --- DOWNLOAD ML REPORT ---
         st.markdown("### 📥 Download ML Report")
         ml_report = {
             "ensemble_verdict": ens_verdict,
