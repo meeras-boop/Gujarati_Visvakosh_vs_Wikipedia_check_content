@@ -1,5 +1,5 @@
 # ============================================================================
-# streamlit_app.py — Rule-Based + All ML Models (Local Files + GitHub fallback)
+# streamlit_app.py — Rule-Based + All ML Models (with LFS bypass)
 # ============================================================================
 
 import streamlit as st
@@ -12,7 +12,6 @@ import joblib
 import requests
 from io import BytesIO
 from collections import Counter
-from difflib import SequenceMatcher
 
 from style_matrix_classifier import analyze_text
 
@@ -72,12 +71,11 @@ st.markdown(
 # CONFIG
 # ============================================================================
 
-# Directory of THIS script — .pkl files are expected HERE, next to it
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# GitHub fallback (only used if local files are missing)
-GITHUB_RAW_BASE = (
-    "https://raw.githubusercontent.com/meeras-boob/"
+# The media URL bypasses Git LFS and serves the ACTUAL binary file
+GITHUB_MEDIA_BASE = (
+    "https://media.githubusercontent.com/media/meeras-boob/"
     "Gujarati_Visvakosh_vs_Wikipedia_check_content/main"
 )
 
@@ -246,100 +244,111 @@ class StyleMatrixExtractor:
 
 
 # ============================================================================
-# LOAD MODELS — LOCAL FOLDER FIRST, GITHUB FALLBACK
+# LOAD MODELS — TRY LOCAL, THEN MEDIA URL (LFS BYPASS)
 # ============================================================================
 
+def is_valid_pickle(data):
+    """Check if data is a real pickle, not an LFS pointer."""
+    if isinstance(data, bytes):
+        # LFS pointer files start with "version https://git-lfs"
+        if data[:30].startswith(b"version https://git-lfs"):
+            return False
+        if len(data) < 100:
+            return False
+    return True
+
+
 def try_load_local(fname):
-    """Try to load from same directory as this script."""
+    """Try to load .pkl from local repo folder."""
     path = os.path.join(SCRIPT_DIR, fname)
     if not os.path.exists(path):
-        return None, f"not found at {path}"
+        return None, "not in local repo"
+
+    size = os.path.getsize(path)
+    if size < 100:
+        # Read first bytes to detect LFS pointer
+        with open(path, 'rb') as f:
+            head = f.read(50)
+        if head.startswith(b"version https://git-lfs"):
+            return None, f"local file is LFS pointer ({size} bytes)"
+        return None, f"local file too small ({size} bytes)"
+
     try:
-        if os.path.getsize(path) < 100:
-            return None, f"file too small ({os.path.getsize(path)} bytes)"
         data = joblib.load(path)
         return data, None
     except Exception as e:
-        return None, f"{type(e).__name__}: {str(e)[:80]}"
+        return None, f"local load error: {type(e).__name__}"
 
 
-def try_load_github(fname, timeout=20):
-    """Fallback: try to load from GitHub raw URL."""
-    url = f"{GITHUB_RAW_BASE}/{fname}"
+def try_load_media_url(fname, timeout=60):
+    """Download from media.githubusercontent.com — LFS bypass."""
+    url = f"{GITHUB_MEDIA_BASE}/{fname}"
     try:
-        r = requests.get(url, timeout=timeout)
+        r = requests.get(url, timeout=timeout, allow_redirects=True)
         if r.status_code != 200:
             return None, f"HTTP {r.status_code}"
-        if len(r.content) < 100:
-            return None, f"too small ({len(r.content)} bytes)"
+        if not is_valid_pickle(r.content):
+            return None, f"got LFS pointer ({len(r.content)} bytes)"
         data = joblib.load(BytesIO(r.content))
         return data, None
+    except requests.exceptions.Timeout:
+        return None, "timeout"
     except Exception as e:
-        return None, f"{type(e).__name__}: {str(e)[:80]}"
+        return None, f"{type(e).__name__}"
+
+
+def bundle_from_data(data, fname, source):
+    """Convert loaded pickle data into a bundle."""
+    name = data.get("model_name", fname.replace(".pkl", ""))
+    return name, {
+        "model": data["model"],
+        "pipeline": data["feature_pipeline"],
+        "cv_f1": data.get("metrics", {}).get("cv_mean", 0.0),
+        "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
+        "val_v_ok": data.get("val_v_ok", False),
+        "val_w_ok": data.get("val_w_ok", False),
+        "source": source,
+    }
 
 
 def load_all_ml_models():
-    """Load all .pkl files — local first, then GitHub."""
+    """Load every model — local folder first, then media URL."""
     models = {}
     status = []  # (filename, source, is_ok, msg)
 
     for fname in MODEL_FILES:
-        # Try local first
-        data, err = try_load_local(fname)
-
+        # 1) Local
+        data, err_local = try_load_local(fname)
         if data is not None:
             try:
-                name = data.get("model_name", fname.replace(".pkl", ""))
-                models[name] = {
-                    "model": data["model"],
-                    "pipeline": data["feature_pipeline"],
-                    "cv_f1": data.get("metrics", {}).get("cv_mean", 0.0),
-                    "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
-                    "val_v_ok": data.get("val_v_ok", False),
-                    "val_w_ok": data.get("val_w_ok", False),
-                    "source": "local",
-                }
+                name, bundle = bundle_from_data(data, fname, "local")
+                models[name] = bundle
                 status.append((fname, "local", True, name))
                 continue
-            except KeyError as e:
-                status.append((fname, "local", False, f"Missing key: {e}"))
-                continue
             except Exception as e:
-                status.append((fname, "local", False,
-                               f"{type(e).__name__}: {str(e)[:80]}"))
-                continue
+                err_local = f"local parse: {type(e).__name__}"
 
-        # Local failed → try GitHub
-        data, err = try_load_github(fname)
-
+        # 2) Media URL (LFS bypass)
+        data, err_media = try_load_media_url(fname)
         if data is not None:
             try:
-                name = data.get("model_name", fname.replace(".pkl", ""))
-                models[name] = {
-                    "model": data["model"],
-                    "pipeline": data["feature_pipeline"],
-                    "cv_f1": data.get("metrics", {}).get("cv_mean", 0.0),
-                    "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
-                    "val_v_ok": data.get("val_v_ok", False),
-                    "val_w_ok": data.get("val_w_ok", False),
-                    "source": "github",
-                }
-                status.append((fname, "github", True, name))
+                name, bundle = bundle_from_data(data, fname, "media")
+                models[name] = bundle
+                status.append((fname, "media", True, name))
                 continue
             except Exception as e:
-                status.append((fname, "github", False,
-                               f"{type(e).__name__}: {str(e)[:80]}"))
-                continue
+                err_media = f"media parse: {type(e).__name__}"
 
-        # Both failed
-        status.append((fname, "none", False, err))
+        # 3) Both failed
+        status.append((fname, "none", False,
+                       f"local:[{err_local}] | media:[{err_media}]"))
 
     return models, status
 
 
-# Load into session_state so we can reload on demand
+# Load models into session state
 if "ml_models" not in st.session_state:
-    with st.spinner("🔄 Loading models..."):
+    with st.spinner("🔄 Loading ML models..."):
         _m, _s = load_all_ml_models()
     st.session_state["ml_models"] = _m
     st.session_state["ml_status"] = _s
@@ -393,13 +402,13 @@ with st.sidebar:
     if err_count:
         st.error(f"❌ {err_count} failed")
 
-    with st.expander(f"✅ Loaded ({ok_count})", expanded=True):
+    with st.expander(f"✅ Loaded ({ok_count})", expanded=(ok_count > 0)):
         for fname, src, ok, msg in LOAD_STATUS:
             if ok:
                 st.write(f"✓ `{fname}` ({src}) → **{msg}**")
 
     if err_count:
-        with st.expander(f"❌ Failed ({err_count})", expanded=True):
+        with st.expander(f"❌ Failed ({err_count})", expanded=(ok_count == 0)):
             for fname, src, ok, msg in LOAD_STATUS:
                 if not ok:
                     st.write(f"❌ `{fname}`")
@@ -407,7 +416,16 @@ with st.sidebar:
 
     st.markdown("---")
     st.caption(f"📁 Script dir: `{SCRIPT_DIR}`")
-    st.caption(f"📦 .pkl files found locally: {ok_count}")
+    try:
+        local_pkls = [f for f in os.listdir(SCRIPT_DIR) if f.endswith('.pkl')]
+        st.caption(f"📦 `.pkl` files in local repo: {len(local_pkls)}")
+        if local_pkls:
+            with st.expander("Local .pkl files"):
+                for f in local_pkls:
+                    size = os.path.getsize(os.path.join(SCRIPT_DIR, f))
+                    st.caption(f"`{f}` — {size:,} bytes")
+    except Exception as e:
+        st.caption(f"⚠ Could not list dir: {e}")
 
 
 # ============================================================================
@@ -425,6 +443,7 @@ def ml_predict_one(text, name, bundle):
         "cv_f1": bundle.get("cv_f1", 0.0),
         "val_v_ok": bundle.get("val_v_ok", False),
         "val_w_ok": bundle.get("val_w_ok", False),
+        "source": bundle.get("source", "?"),
     }
 
     try:
@@ -587,7 +606,6 @@ if analyze_btn:
     st.success("✅ Analysis complete")
     st.markdown("---")
 
-    # ---- PREDICTION BOX ----
     st.header("🎯 Prediction")
     pred = result['prediction']
     conf = result['confidence']
@@ -614,7 +632,6 @@ if analyze_btn:
     c3.metric("Visvakosh Ratio", f"{v['visvakosh_ratio']:.1%}")
     st.progress(v['visvakosh_ratio'])
 
-    # ---- RULE-BY-RULE ----
     st.markdown("---")
     st.header("📋 Rule-by-Rule Breakdown")
     st.caption("Each rule contributes votes to Visvakosh or Wikipedia")
@@ -629,7 +646,6 @@ if analyze_btn:
         if w_votes > 0:
             st.markdown(f"**+{w_votes} Wikipedia**  {r['reason']}")
 
-    # ---- SATISFIED ----
     st.markdown("---")
     st.header("✅ Satisfied Style Properties")
     c1, c2 = st.columns(2)
@@ -654,7 +670,6 @@ if analyze_btn:
         else:
             st.info("None met")
 
-    # ---- QUANTITATIVE ----
     st.markdown("---")
     st.header("📈 Quantitative Analysis")
     quant = result['quantitative_analysis']
@@ -720,7 +735,6 @@ if analyze_btn:
         c1.metric("Citation Markers", stm['citation_count'])
         c2.metric("Wiki Headings", stm['wiki_heading_count'])
 
-    # ---- QUALITATIVE ----
     st.markdown("---")
     st.header("🎭 Qualitative Analysis")
     qual = result['qualitative_analysis']
@@ -752,7 +766,6 @@ if analyze_btn:
         ])
         st.dataframe(df, use_container_width=True, height=400)
 
-    # ---- DOWNLOAD ----
     st.markdown("---")
     st.header("📥 Download Report")
     report = {
@@ -785,9 +798,8 @@ if analyze_btn:
     if not ALL_ML_MODELS:
         st.error(
             f"⚠️ **0 ML models loaded.**\n\n"
-            f"Script directory: `{SCRIPT_DIR}`\n\n"
-            f"**Expected to find `.pkl` files there.**\n\n"
-            "Check the sidebar **❌ Failed** expander for details."
+            f"**Local path:** `{SCRIPT_DIR}`\n\n"
+            "Check the sidebar **❌ Failed** expander for the exact reason."
         )
     else:
         with st.spinner(f"Running {len(ALL_ML_MODELS)} ML models..."):
@@ -863,6 +875,7 @@ if analyze_btn:
             if r["val_v_ok"] and r["val_w_ok"]:
                 badges.append("✅ both validations passed")
             badges.append(f"CV F1 = {r['cv_f1']:.4f}")
+            badges.append(f"source: {r.get('source', '?')}")
 
             signals_html = "".join(
                 f'<span class="model-signal">{s}</span>' for s in r.get("signals", [])
