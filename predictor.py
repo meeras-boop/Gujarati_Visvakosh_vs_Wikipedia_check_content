@@ -1,12 +1,14 @@
 # ============================================================================
 # predictor.py
 # Loads trained Visvakosh/Wikipedia classifier and provides detailed analysis
+# FIXED VERSION - Handles pickle module mismatch
 # ============================================================================
 
 import pandas as pd
 import numpy as np
 import re
 import os
+import sys
 import json
 import joblib
 from collections import Counter
@@ -60,21 +62,18 @@ class GujaratiStyleMatrixExtractor:
     def __init__(self):
         self.tokenizer = GujaratiTokenizer()
 
-        # Visvakosh characteristic markers
         self.visvakosh_markers = [
             'તથા', 'વળી', 'આથી', 'ગણાય', 'પ્રચલિત', 'આવાં', 'કેટલાંક',
             'અલબત્ત', 'તદુપરાંત', 'દા.ત.', 'જુઓ', 'એટલે કે', 'કહેવાય છે',
             'દા. ત.', 'વળી', 'તેમજ', 'ઉપરાંત'
         ]
 
-        # Wikipedia characteristic markers
         self.wikipedia_markers = [
             'શામેલ', 'ઘણીવાર', 'કોઈપણ', 'વ્યાખ્યાયિત', 'ઉદાહરણ તરીકે',
             'મોડેલ', 'સોફ્ટવેર', 'ઓફ', 'મુખ્ય લેખ', 'આ પણ જુઓ', 'જો કે',
             'દ્વારા', 'સંદર્ભ', 'બાહ્ય કડીઓ'
         ]
 
-        # Passive voice markers (two styles)
         self.visvakosh_passive = [
             'ગણાય છે', 'કરાય છે', 'કહેવાય છે', 'થાય છે', 'ઓળખાય છે'
         ]
@@ -85,12 +84,10 @@ class GujaratiStyleMatrixExtractor:
             'હતું', 'હતા', 'હતી', 'છે'
         ]
 
-        # Definition markers
         self.definition_markers = [
             'એટલે', 'કહેવાય', 'ગણાય', 'રૂપે ઓળખાય', 'ઓળખાય છે', 'એટલે કે'
         ]
 
-        # Transliteration style markers
         self.traditional_translit = ['ૉ', 'ૅ', 'ઑ']
         self.modern_translit = ['ો', 'ે', 'ઓ']
 
@@ -113,7 +110,7 @@ class GujaratiStyleMatrixExtractor:
         char_count = len(text)
         sentence_count = max(len(sentences), 1)
 
-        # BLOCK 1: Length & Structure
+        # BLOCK 1
         features['word_count'] = word_count
         features['char_count'] = char_count
         features['sentence_count'] = sentence_count
@@ -136,7 +133,7 @@ class GujaratiStyleMatrixExtractor:
             features['min_sentence_length'] = 0
             features['sentence_length_range'] = 0
 
-        # BLOCK 2: Lexical Richness
+        # BLOCK 2
         unique_words = set(words)
         features['unique_word_count'] = len(unique_words)
         features['type_token_ratio'] = len(unique_words) / word_count
@@ -158,7 +155,7 @@ class GujaratiStyleMatrixExtractor:
         features['mattr_50'] = self._calculate_mattr(words, window=50)
         features['mattr_100'] = self._calculate_mattr(words, window=100)
 
-        # BLOCK 3: Passive/Active Voice
+        # BLOCK 3
         v_passive_count = sum(text.count(m) for m in self.visvakosh_passive)
         features['visvakosh_passive_count'] = v_passive_count
         features['visvakosh_passive_per_1000'] = (v_passive_count / word_count) * 1000
@@ -179,7 +176,7 @@ class GujaratiStyleMatrixExtractor:
         features['passive_sentence_ratio'] = passive_sentences / sentence_count
         features['active_sentence_ratio'] = 1 - features['passive_sentence_ratio']
 
-        # BLOCK 4: English Terms & Transliteration
+        # BLOCK 4
         english_chars = len(self.english_letters.findall(text))
         features['english_char_count'] = english_chars
         features['english_char_ratio'] = english_chars / char_count
@@ -203,7 +200,7 @@ class GujaratiStyleMatrixExtractor:
         total_translit = trad_count + modern_count
         features['translit_style_ratio'] = trad_count / total_translit if total_translit > 0 else 0
 
-        # BLOCK 5: Punctuation
+        # BLOCK 5
         features['colon_count'] = text.count(':')
         features['colon_per_1000'] = (features['colon_count'] / word_count) * 1000
 
@@ -220,7 +217,7 @@ class GujaratiStyleMatrixExtractor:
         features['danda_count'] = text.count('।')
         features['quote_count'] = text.count('"') + text.count('"') + text.count('"')
 
-        # BLOCK 6: Source-Specific Markers
+        # BLOCK 6
         v_marker_count = sum(text.count(m) for m in self.visvakosh_markers)
         features['visvakosh_marker_count'] = v_marker_count
         features['visvakosh_markers_per_1000'] = (v_marker_count / word_count) * 1000
@@ -238,7 +235,7 @@ class GujaratiStyleMatrixExtractor:
         for i, marker in enumerate(self.wikipedia_markers[:10]):
             features[f'w_marker_{i}_{marker[:4]}'] = text.count(marker)
 
-        # BLOCK 7: Definition Style
+        # BLOCK 7
         features['colon_in_first_200'] = 1 if ':' in text[:200] else 0
         features['colon_in_first_100'] = 1 if ':' in text[:100] else 0
 
@@ -258,7 +255,7 @@ class GujaratiStyleMatrixExtractor:
             features['first_sentence_has_definition_marker'] = 0
             features['first_sentence_length'] = 0
 
-        # BLOCK 8: Structure
+        # BLOCK 8
         paragraphs = [p.strip() for p in re.split(r'\n+', text) if p.strip()]
         features['paragraph_count'] = max(len(paragraphs), 1)
 
@@ -275,7 +272,7 @@ class GujaratiStyleMatrixExtractor:
             features['avg_paragraph_length'] = 0
             features['std_paragraph_length'] = 0
 
-        # BLOCK 9: Character N-grams
+        # BLOCK 9
         if len(text) >= 2:
             char_bigrams = set([text[i:i+2] for i in range(len(text)-1)])
             features['unique_char_bigrams'] = len(char_bigrams)
@@ -292,7 +289,7 @@ class GujaratiStyleMatrixExtractor:
             features['unique_char_trigrams'] = 0
             features['char_trigram_ratio'] = 0
 
-        # BLOCK 10: Word N-grams
+        # BLOCK 10
         if len(words) >= 2:
             word_bigrams = self.tokenizer.get_ngrams(words, 2)
             features['word_bigram_count'] = len(word_bigrams)
@@ -326,13 +323,12 @@ class GujaratiStyleMatrixExtractor:
         return np.mean(ttrs) if ttrs else 0
 
     def _get_empty_matrix(self) -> Dict[str, float]:
-        # Return all features set to 0
         template = self.extract_style_matrix("આ એક પરીક્ષણ લખાણ છે. તે ખૂબ ટૂંકું છે.")
         return {k: 0 for k in template.keys()}
 
 
 # ============================================================================
-# MODEL CLASS (Matches training class definition)
+# MODEL CLASS
 # ============================================================================
 
 class VisvakoshWikipediaClassifier:
@@ -358,7 +354,6 @@ class VisvakoshWikipediaClassifier:
         feature_df = feature_df.fillna(0)
         feature_df = feature_df.replace([np.inf, -np.inf], 0)
 
-        # Align columns with trained feature_names
         if self.feature_names is not None:
             for col in self.feature_names:
                 if col not in feature_df.columns:
@@ -399,8 +394,25 @@ class VisvakoshWikipediaClassifier:
 
     @classmethod
     def load(cls, filepath: str):
+        """
+        Load model with pickle module mismatch fix.
+        Registers classes under both 'predictor' and '__main__' so pickle can find them.
+        """
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"Model file not found: {filepath}")
+
+        # ────────────────────────────────────────────────────────────────
+        # FIX: Register classes under __main__ so joblib/pickle can find them
+        # ────────────────────────────────────────────────────────────────
+        import __main__
+        __main__.GujaratiTokenizer = GujaratiTokenizer
+        __main__.GujaratiStyleMatrixExtractor = GujaratiStyleMatrixExtractor
+        __main__.VisvakoshWikipediaClassifier = VisvakoshWikipediaClassifier
+
+        # Also ensure this module is registered
+        current_module = sys.modules[__name__]
+        sys.modules['predictor'] = current_module
+        sys.modules['main'] = current_module  # In case pickle used 'main'
 
         model_data = joblib.load(filepath)
 
@@ -418,45 +430,22 @@ class VisvakoshWikipediaClassifier:
 
 
 # ============================================================================
-# DETAILED ANALYSIS ENGINE
+# DETAILED ANALYZER (unchanged)
 # ============================================================================
 
 class DetailedAnalyzer:
-    """
-    Provides detailed qualitative and quantitative analysis of text
-    against Visvakosh vs Wikipedia style matrices.
-    """
-
     def __init__(self, classifier: VisvakoshWikipediaClassifier):
         self.classifier = classifier
         self.extractor = classifier.feature_extractor
 
     def analyze(self, text: str) -> Dict[str, Any]:
-        """
-        Full analysis: prediction + qualitative + quantitative parameters.
-        """
-        # Get features
         features = self.extractor.extract_style_matrix(text)
-
-        # Get prediction
         prediction = self.classifier.predict([text])[0]
         probability = self.classifier.predict_proba([text])[0]
-
-        # Get style scores
         style_scores = self._compute_style_scores(features)
-
-        # Compute quantitative analysis
         quant_analysis = self._quantitative_analysis(features)
-
-        # Compute qualitative analysis
         qual_analysis = self._qualitative_analysis(features, text)
-
-        # Compute style matrix satisfied properties
-        satisfied = self._compute_satisfied_properties(
-            features, prediction, probability
-        )
-
-        # Recommendation
+        satisfied = self._compute_satisfied_properties(features, prediction, probability)
         predicted_source = 'Wikipedia' if prediction == 1 else 'Visvakosh'
 
         return {
@@ -475,21 +464,16 @@ class DetailedAnalyzer:
         }
 
     def _compute_style_scores(self, features: Dict[str, float]) -> Dict[str, float]:
-        """Compute style indicator scores."""
         scores = {}
-
-        # Visvakosh style scores
         scores['visvakosh_marker_score'] = features.get('visvakosh_markers_per_1000', 0)
         scores['definition_first_score'] = features.get('colon_in_first_200', 0) * 100
         scores['traditional_translit_score'] = features.get('traditional_translit_ratio', 0) * 1000
         scores['concise_passive_score'] = features.get('visvakosh_passive_per_1000', 0)
 
-        # Wikipedia style scores
         scores['wikipedia_marker_score'] = features.get('wikipedia_markers_per_1000', 0)
         scores['modern_translit_score'] = features.get('modern_translit_ratio', 0) * 1000
         scores['extended_passive_score'] = features.get('wikipedia_passive_per_1000', 0)
 
-        # Overall ratio
         v_score = (scores['visvakosh_marker_score'] +
                    scores['definition_first_score'] +
                    scores['concise_passive_score'])
@@ -498,11 +482,9 @@ class DetailedAnalyzer:
 
         total = v_score + w_score
         scores['visvakosh_style_ratio'] = v_score / total if total > 0 else 0.5
-
         return {k: round(v, 4) for k, v in scores.items()}
 
     def _quantitative_analysis(self, features: Dict[str, float]) -> Dict[str, Any]:
-        """Compute quantitative parameters with Visvakosh/Wikipedia comparison."""
         return {
             'length_metrics': {
                 'word_count': int(features.get('word_count', 0)),
@@ -516,9 +498,7 @@ class DetailedAnalyzer:
                 'std_sentence_length': round(features.get('std_sentence_length', 0), 2),
                 'max_sentence_length': int(features.get('max_sentence_length', 0)),
                 'min_sentence_length': int(features.get('min_sentence_length', 0)),
-                'interpretation': self._interpret_sentence_length(
-                    features.get('avg_sentence_length', 0)
-                )
+                'interpretation': self._interpret_sentence_length(features.get('avg_sentence_length', 0))
             },
             'vocabulary_metrics': {
                 'unique_words': int(features.get('unique_word_count', 0)),
@@ -528,9 +508,7 @@ class DetailedAnalyzer:
                 'yule_k': round(features.get('yule_k', 0), 2),
                 'mattr_50': round(features.get('mattr_50', 0), 4),
                 'mattr_100': round(features.get('mattr_100', 0), 4),
-                'interpretation': self._interpret_ttr(
-                    features.get('type_token_ratio', 0)
-                )
+                'interpretation': self._interpret_ttr(features.get('type_token_ratio', 0))
             },
             'voice_metrics': {
                 'total_passive_count': int(features.get('total_passive_count', 0)),
@@ -538,9 +516,7 @@ class DetailedAnalyzer:
                 'visvakosh_passive_per_1000': round(features.get('visvakosh_passive_per_1000', 0), 2),
                 'wikipedia_passive_per_1000': round(features.get('wikipedia_passive_per_1000', 0), 2),
                 'passive_sentence_ratio': round(features.get('passive_sentence_ratio', 0), 4),
-                'interpretation': self._interpret_passive(
-                    features.get('passive_sentence_ratio', 0)
-                )
+                'interpretation': self._interpret_passive(features.get('passive_sentence_ratio', 0))
             },
             'transliteration_metrics': {
                 'traditional_translit_count': int(features.get('traditional_translit_count', 0)),
@@ -548,9 +524,7 @@ class DetailedAnalyzer:
                 'modern_translit_count': int(features.get('modern_translit_count', 0)),
                 'modern_translit_ratio': round(features.get('modern_translit_ratio', 0), 6),
                 'translit_style_ratio': round(features.get('translit_style_ratio', 0), 4),
-                'interpretation': self._interpret_transliteration(
-                    features.get('translit_style_ratio', 0)
-                )
+                'interpretation': self._interpret_transliteration(features.get('translit_style_ratio', 0))
             },
             'punctuation_metrics': {
                 'colon_per_1000': round(features.get('colon_per_1000', 0), 2),
@@ -559,22 +533,18 @@ class DetailedAnalyzer:
                 'comma_per_1000': round(features.get('comma_per_1000', 0), 2),
                 'interpretation': self._interpret_punctuation(
                     features.get('colon_per_1000', 0),
-                    features.get('parentheses_per_1000', 0)
-                )
+                    features.get('parentheses_per_1000', 0))
             },
             'english_usage_metrics': {
                 'english_char_ratio': round(features.get('english_char_ratio', 0), 4),
                 'english_gloss_count': int(features.get('english_gloss_count', 0)),
                 'english_glosses_per_1000': round(features.get('english_glosses_per_1000', 0), 2),
                 'latin_token_ratio': round(features.get('latin_token_ratio', 0), 4),
-                'interpretation': self._interpret_english_usage(
-                    features.get('english_glosses_per_1000', 0)
-                )
+                'interpretation': self._interpret_english_usage(features.get('english_glosses_per_1000', 0))
             }
         }
 
     def _qualitative_analysis(self, features: Dict[str, float], text: str) -> Dict[str, Any]:
-        """Compute qualitative parameters."""
         return {
             'tone': {
                 'definition_first': bool(features.get('colon_in_first_200', 0)),
@@ -585,9 +555,9 @@ class DetailedAnalyzer:
             'register': {
                 'formality': self._classify_formality(features),
                 'technical_density': self._classify_technical_density(features),
-                'terminology_glossing': 'High (Gujarati → English)' 
-                    if features.get('english_glosses_per_1000', 0) > 15 
-                    else 'Moderate' if features.get('english_glosses_per_1000', 0) > 5 
+                'terminology_glossing': 'High (Gujarati → English)'
+                    if features.get('english_glosses_per_1000', 0) > 15
+                    else 'Moderate' if features.get('english_glosses_per_1000', 0) > 5
                     else 'Low',
             },
             'structural_style': {
@@ -609,11 +579,9 @@ class DetailedAnalyzer:
         }
 
     def _compute_satisfied_properties(self, features, prediction, probability) -> Dict[str, Any]:
-        """Compute which style matrix properties are satisfied for the predicted source."""
         predicted_source = 'Wikipedia' if prediction == 1 else 'Visvakosh'
         confidence = float(max(probability))
 
-        # Visvakosh thresholds (from research)
         visvakosh_thresholds = {
             'definition_first': features.get('colon_in_first_200', 0) == 1,
             'high_visvakosh_markers': features.get('visvakosh_markers_per_1000', 0) > 5,
@@ -626,7 +594,6 @@ class DetailedAnalyzer:
             'high_parentheses': features.get('parentheses_per_1000', 0) > 30,
         }
 
-        # Wikipedia thresholds
         wikipedia_thresholds = {
             'wikipedia_markers': features.get('wikipedia_markers_per_1000', 0) > 2,
             'modern_transliteration': features.get('modern_translit_ratio', 0) > 0.02,
@@ -658,41 +625,33 @@ class DetailedAnalyzer:
             'total_satisfied': len(satisfied)
         }
 
-    # -----------------------------------------------------------------
-    # Interpretation helpers
-    # -----------------------------------------------------------------
-
     def _interpret_sentence_length(self, avg_len: float) -> str:
         if avg_len < 15:
             return "Short sentences → Visvakosh pattern"
         elif avg_len < 20:
             return "Medium sentences → Borderline"
-        else:
-            return "Long sentences → Wikipedia pattern"
+        return "Long sentences → Wikipedia pattern"
 
     def _interpret_ttr(self, ttr: float) -> str:
         if ttr > 0.55:
             return "High lexical diversity → Visvakosh pattern"
         elif ttr > 0.45:
             return "Moderate lexical diversity → Borderline"
-        else:
-            return "Low lexical diversity → Wikipedia pattern"
+        return "Low lexical diversity → Wikipedia pattern"
 
     def _interpret_passive(self, ratio: float) -> str:
         if ratio < 0.15:
             return "Low passive usage → Visvakosh pattern"
         elif ratio < 0.30:
             return "Moderate passive usage → Borderline"
-        else:
-            return "High passive usage → Wikipedia pattern"
+        return "High passive usage → Wikipedia pattern"
 
     def _interpret_transliteration(self, ratio: float) -> str:
         if ratio > 0.6:
             return "Traditional transliteration dominant → Visvakosh style"
         elif ratio > 0.3:
             return "Mixed transliteration → Borderline"
-        else:
-            return "Modern transliteration dominant → Wikipedia style"
+        return "Modern transliteration dominant → Wikipedia style"
 
     def _interpret_punctuation(self, colon: float, paren: float) -> str:
         if colon > 8 and paren > 30:
@@ -706,8 +665,7 @@ class DetailedAnalyzer:
             return "High English glossing → Visvakosh pattern"
         elif gloss_per_1000 > 5:
             return "Moderate English glossing → Borderline"
-        else:
-            return "Low English glossing → Wikipedia pattern"
+        return "Low English glossing → Wikipedia pattern"
 
     def _classify_definition_style(self, features) -> str:
         if features.get('colon_in_first_200', 0) == 1:
@@ -806,7 +764,6 @@ class DetailedAnalyzer:
         return "Mixed tense usage"
 
     def _detect_sectioning(self, text: str) -> str:
-        # Detect wiki-style headings
         heading_pattern = re.compile(r'^==+\s*.+\s*==+$', re.MULTILINE)
         if heading_pattern.search(text):
             return "Wiki-style section headings present → Wikipedia"
@@ -850,20 +807,7 @@ class DetailedAnalyzer:
 # ============================================================================
 
 def load_and_analyze(text: str, model_path: str = 'visvakosh_classifier.pkl') -> Dict[str, Any]:
-    """
-    Main entry point: Load model and analyze text.
-
-    Parameters:
-    -----------
-    text : str
-        Gujarati text to analyze
-    model_path : str
-        Path to the saved .pkl model
-
-    Returns:
-    --------
-    dict with full analysis
-    """
+    """Main entry point: Load model and analyze text."""
     classifier = VisvakoshWikipediaClassifier.load(model_path)
     analyzer = DetailedAnalyzer(classifier)
     return analyzer.analyze(text)
@@ -884,10 +828,7 @@ if __name__ == "__main__":
     અને માહિતીપ્રક્રમણ માટેનું વીજાણુસાધન. તે સંજ્ઞાઓનું ઝડપથી અને 
     ચોકસાઈપૂર્વક રૂપાંતર કરી શકતું મશીન છે. આથી તેને ગણાય છે.
     """
-
     result = load_and_analyze(test_text, 'visvakosh_classifier.pkl')
-
     print(f"Prediction: {result['prediction']}")
     print(f"Confidence: {result['confidence']:.4f}")
-    print("\nSummary:")
     print(result['summary'])
