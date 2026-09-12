@@ -1,5 +1,5 @@
 # ============================================================================
-# streamlit_app.py — Rule-Based + All ML Models (Google Drive Auto-Load)
+# streamlit_app.py — Rule-Based + All ML Models (LOCAL .pkl files)
 # ============================================================================
 
 import streamlit as st
@@ -8,11 +8,8 @@ import pandas as pd
 import numpy as np
 import os
 import re
-import io
+import glob
 import joblib
-import requests
-import gdown
-from bs4 import BeautifulSoup
 from collections import Counter
 
 from style_matrix_classifier import analyze_text
@@ -70,37 +67,13 @@ st.markdown(
 
 
 # ============================================================================
-# CONFIG
+# CONFIG — .pkl files are in the SAME folder as this script
 # ============================================================================
 
-# Your public Google Drive folder ID
-GDRIVE_FOLDER_ID = "1ON0EOjXFZN9XSimbsRKqNagg0XiKYI0v"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Cache directory (persists across reruns on Streamlit Cloud)
-CACHE_DIR = "/tmp/gdrive_models"
-os.makedirs(CACHE_DIR, exist_ok=True)
-
-# Only load these model files (skip best_model.pkl, visvakosh_classifier.pkl, etc.)
-WANTED_MODELS = {
-    "AdaBoost.pkl": "AdaBoost",
-    "BernoulliNB.pkl": "BernoulliNB",
-    "DecisionTree.pkl": "DecisionTree",
-    "ExtraTrees.pkl": "ExtraTrees",
-    "GradientBoosting.pkl": "GradientBoosting",
-    "KNN.pkl": "KNN",
-    "LDA.pkl": "LDA",
-    "LinearSVC.pkl": "LinearSVC",
-    "LogisticRegression.pkl": "LogisticRegression",
-    "LogisticRegression_L1.pkl": "LogisticRegression_L1",
-    "MLP.pkl": "MLP",
-    "PassiveAggressive.pkl": "PassiveAggressive",
-    "Perceptron.pkl": "Perceptron",
-    "RandomForest.pkl": "RandomForest",
-    "RidgeClassifier.pkl": "RidgeClassifier",
-    "SGDClassifier.pkl": "SGDClassifier",
-    "SVC_Linear.pkl": "SVC_Linear",
-    "SVC_RBF.pkl": "SVC_RBF",
-}
+# Files to skip (not actual classifiers)
+SKIP_FILES = {"best_model.pkl", "visvakosh_classifier.pkl"}
 
 DENSE_ONLY = {'KNN', 'SVC_RBF', 'MLP', 'LDA', 'DecisionTree'}
 
@@ -246,103 +219,51 @@ class StyleMatrixExtractor:
 
 
 # ============================================================================
-# GOOGLE DRIVE LOADER — Auto-discover files in shared folder
+# LOAD MODELS — DIRECTLY FROM LOCAL REPO FOLDER
 # ============================================================================
-
-def scrape_folder_file_ids(folder_id, timeout=30):
-    """
-    Scrape the public Google Drive folder HTML to get file IDs.
-    Returns dict {filename: file_id}
-    """
-    url = f"https://drive.google.com/drive/folders/{folder_id}"
-    try:
-        r = requests.get(url, timeout=timeout)
-        if r.status_code != 200:
-            return {}, f"HTTP {r.status_code}"
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        # Google embeds data in a JS variable — find file IDs
-        file_map = {}
-        # Method 1: search for IDs in the raw HTML
-        # File IDs are typically 28-44 char strings starting with 1
-        pattern = re.compile(r'"([a-zA-Z0-9_-]{25,50})"\s*,\s*"([^"]+\.pkl)"')
-        for m in pattern.finditer(r.text):
-            fid, fname = m.group(1), m.group(2)
-            if fname.endswith('.pkl'):
-                file_map[fname] = fid
-
-        # Method 2: look for /file/d/ID patterns
-        pattern2 = re.compile(
-            r'/file/d/([a-zA-Z0-9_-]{25,50})[^"]*"[^>]*>([^<]+\.pkl)'
-        )
-        for m in pattern2.finditer(r.text):
-            fid, fname = m.group(1), m.group(2)
-            if fname.endswith('.pkl') and fname not in file_map:
-                file_map[fname] = fid
-
-        if not file_map:
-            return {}, "could not find any .pkl file IDs in HTML"
-        return file_map, None
-    except Exception as e:
-        return {}, f"{type(e).__name__}: {str(e)[:100]}"
-
-
-def download_from_drive(file_id, dest_path, timeout=120):
-    """
-    Download a public Google Drive file by ID.
-    Returns (success: bool, error_msg: str or None)
-    """
-    try:
-        url = f"https://drive.google.com/uc?id={file_id}&export=download"
-        # gdown handles large-file confirmation automatically
-        gdown.download(id=file_id, output=dest_path,
-                       quiet=True, fuzzy=True)
-        if os.path.exists(dest_path) and os.path.getsize(dest_path) > 100:
-            return True, None
-        return False, "downloaded file too small"
-    except Exception as e:
-        return False, f"{type(e).__name__}: {str(e)[:100]}"
-
 
 def load_all_ml_models():
     """
-    Discover .pkl files in the public Google Drive folder,
-    download them (with local caching), and load them.
+    Find all .pkl files in the same folder as this script and load them.
+    No HTTP, no Google Drive — just local disk.
     """
     models = {}
-    status = []
+    status = []  # (filename, size_bytes, is_ok, msg)
 
-    # Step 1: discover file IDs
-    with st.spinner("🔍 Discovering models in Google Drive folder..."):
-        file_map, err = scrape_folder_file_ids(GDRIVE_FOLDER_ID)
+    # Find every .pkl file in the script directory
+    pkl_paths = sorted(glob.glob(os.path.join(SCRIPT_DIR, "*.pkl")))
 
-    if err:
-        # Fallback: rely on manual known file IDs. But since we don't have
-        # them, mark all as failed and let the user know.
-        return {}, [(fname, "none", False,
-                     f"Could not read folder ({err})")
-                    for fname in WANTED_MODELS.keys()]
+    if not pkl_paths:
+        return models, status
 
-    # Step 2: for each wanted model, download and load
-    for fname, model_key in WANTED_MODELS.items():
-        if fname not in file_map:
-            status.append((fname, "none", False, "not found in Drive folder"))
+    for path in pkl_paths:
+        fname = os.path.basename(path)
+        size = os.path.getsize(path)
+
+        # Skip non-classifier files
+        if fname in SKIP_FILES:
+            status.append((fname, size, False, "skipped (not a classifier)"))
             continue
 
-        fid = file_map[fname]
-        cache_path = os.path.join(CACHE_DIR, fname)
+        # Skip LFS pointer stubs
+        if size < 200:
+            status.append((fname, size, False, f"too small ({size} bytes — LFS pointer?)"))
+            continue
 
-        # Download if not already cached
-        if not os.path.exists(cache_path) or os.path.getsize(cache_path) < 100:
-            ok, err = download_from_drive(fid, cache_path)
-            if not ok:
-                status.append((fname, "drive", False, f"download: {err}"))
+        try:
+            data = joblib.load(path)
+            if not isinstance(data, dict):
+                status.append((fname, size, False,
+                               f"expected dict, got {type(data).__name__}"))
                 continue
 
-        # Load pickle
-        try:
-            data = joblib.load(cache_path)
+            # Try to extract bundle
             name = data.get("model_name", fname.replace(".pkl", ""))
+            if "model" not in data or "feature_pipeline" not in data:
+                status.append((fname, size, False,
+                               f"missing keys. Got: {list(data.keys())}"))
+                continue
+
             models[name] = {
                 "model": data["model"],
                 "pipeline": data["feature_pipeline"],
@@ -350,19 +271,17 @@ def load_all_ml_models():
                 "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
                 "val_v_ok": data.get("val_v_ok", False),
                 "val_w_ok": data.get("val_w_ok", False),
-                "source": "gdrive",
+                "source": "local",
             }
-            status.append((fname, "gdrive", True, name))
-        except KeyError as e:
-            status.append((fname, "gdrive", False, f"missing key: {e}"))
+            status.append((fname, size, True, name))
+
         except Exception as e:
-            status.append((fname, "gdrive", False,
+            status.append((fname, size, False,
                            f"{type(e).__name__}: {str(e)[:80]}"))
 
     return models, status
 
 
-# Load into session_state
 if "ml_models" not in st.session_state:
     _m, _s = load_all_ml_models()
     st.session_state["ml_models"] = _m
@@ -381,7 +300,7 @@ with st.sidebar:
     st.info(
         "**Rule-Based Classifier** + **ML Models Ensemble**\n\n"
         "Uses 14 style matrix rules + all trained ML models "
-        "(loaded from Google Drive)."
+        "(loaded directly from the repo folder)."
     )
 
     st.markdown("---")
@@ -414,21 +333,23 @@ with st.sidebar:
     err_count = sum(1 for _, _, ok, _ in LOAD_STATUS if not ok)
 
     if ok_count:
-        st.success(f"✅ {ok_count} loaded")
+        st.success(f"✅ {ok_count} models loaded")
     if err_count:
-        st.error(f"❌ {err_count} failed")
+        st.error(f"❌ {err_count} not loaded")
 
     with st.expander(f"✅ Loaded ({ok_count})", expanded=(ok_count > 0)):
-        for fname, src, ok, msg in LOAD_STATUS:
+        for fname, size, ok, msg in LOAD_STATUS:
             if ok:
-                st.write(f"✓ `{fname}` ({src}) → **{msg}**")
+                st.write(f"✓ `{fname}` ({size:,} B) → **{msg}**")
 
     if err_count:
         with st.expander(f"❌ Failed ({err_count})", expanded=(ok_count == 0)):
-            for fname, src, ok, msg in LOAD_STATUS:
+            for fname, size, ok, msg in LOAD_STATUS:
                 if not ok:
-                    st.write(f"❌ `{fname}`")
+                    st.write(f"❌ `{fname}` ({size:,} B)")
                     st.caption(f"↳ {msg}")
+
+    st.caption(f"📁 Looking in: `{SCRIPT_DIR}`")
 
 
 # ============================================================================
@@ -801,10 +722,8 @@ if analyze_btn:
     if not ALL_ML_MODELS:
         st.error(
             "⚠️ **0 ML models loaded.**\n\n"
-            "Check the sidebar **❌ Failed** expander for details. "
-            "The most likely cause is that the Google Drive folder "
-            "is not fully public, or the file discovery HTML format "
-            "changed. Try **🔄 Reload Models** in the sidebar."
+            f"Looking in: `{SCRIPT_DIR}`\n\n"
+            "Check the sidebar **❌ Failed** expander for details."
         )
     else:
         with st.spinner(f"Running {len(ALL_ML_MODELS)} ML models..."):
@@ -880,7 +799,6 @@ if analyze_btn:
             if r["val_v_ok"] and r["val_w_ok"]:
                 badges.append("✅ both validations passed")
             badges.append(f"CV F1 = {r['cv_f1']:.4f}")
-            badges.append(f"source: {r.get('source', '?')}")
 
             signals_html = "".join(
                 f'<span class="model-signal">{s}</span>' for s in r.get("signals", [])
