@@ -1,5 +1,5 @@
 # ============================================================================
-# streamlit_app.py — Rule-Based + All ML Models (with LFS bypass)
+# streamlit_app.py — Rule-Based + All ML Models (Google Drive Auto-Load)
 # ============================================================================
 
 import streamlit as st
@@ -8,9 +8,11 @@ import pandas as pd
 import numpy as np
 import os
 import re
+import io
 import joblib
 import requests
-from io import BytesIO
+import gdown
+from bs4 import BeautifulSoup
 from collections import Counter
 
 from style_matrix_classifier import analyze_text
@@ -71,34 +73,34 @@ st.markdown(
 # CONFIG
 # ============================================================================
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Your public Google Drive folder ID
+GDRIVE_FOLDER_ID = "1ON0EOjXFZN9XSimbsRKqNagg0XiKYI0v"
 
-# The media URL bypasses Git LFS and serves the ACTUAL binary file
-GITHUB_MEDIA_BASE = (
-    "https://media.githubusercontent.com/media/meeras-boob/"
-    "Gujarati_Visvakosh_vs_Wikipedia_check_content/main"
-)
+# Cache directory (persists across reruns on Streamlit Cloud)
+CACHE_DIR = "/tmp/gdrive_models"
+os.makedirs(CACHE_DIR, exist_ok=True)
 
-MODEL_FILES = [
-    "AdaBoost.pkl",
-    "BernoulliNB.pkl",
-    "DecisionTree.pkl",
-    "ExtraTrees.pkl",
-    "KNN.pkl",
-    "LDA.pkl",
-    "LinearSVC.pkl",
-    "LogisticRegression.pkl",
-    "LogisticRegression_L1.pkl",
-    "MLP.pkl",
-    "PassiveAggressive.pkl",
-    "Perceptron.pkl",
-    "RandomForest.pkl",
-    "RidgeClassifier.pkl",
-    "SGDClassifier.pkl",
-    "SVC_Linear.pkl",
-    "SVC_RBF.pkl",
-    "GradientBoosting.pkl",
-]
+# Only load these model files (skip best_model.pkl, visvakosh_classifier.pkl, etc.)
+WANTED_MODELS = {
+    "AdaBoost.pkl": "AdaBoost",
+    "BernoulliNB.pkl": "BernoulliNB",
+    "DecisionTree.pkl": "DecisionTree",
+    "ExtraTrees.pkl": "ExtraTrees",
+    "GradientBoosting.pkl": "GradientBoosting",
+    "KNN.pkl": "KNN",
+    "LDA.pkl": "LDA",
+    "LinearSVC.pkl": "LinearSVC",
+    "LogisticRegression.pkl": "LogisticRegression",
+    "LogisticRegression_L1.pkl": "LogisticRegression_L1",
+    "MLP.pkl": "MLP",
+    "PassiveAggressive.pkl": "PassiveAggressive",
+    "Perceptron.pkl": "Perceptron",
+    "RandomForest.pkl": "RandomForest",
+    "RidgeClassifier.pkl": "RidgeClassifier",
+    "SGDClassifier.pkl": "SGDClassifier",
+    "SVC_Linear.pkl": "SVC_Linear",
+    "SVC_RBF.pkl": "SVC_RBF",
+}
 
 DENSE_ONLY = {'KNN', 'SVC_RBF', 'MLP', 'LDA', 'DecisionTree'}
 
@@ -244,112 +246,125 @@ class StyleMatrixExtractor:
 
 
 # ============================================================================
-# LOAD MODELS — TRY LOCAL, THEN MEDIA URL (LFS BYPASS)
+# GOOGLE DRIVE LOADER — Auto-discover files in shared folder
 # ============================================================================
 
-def is_valid_pickle(data):
-    """Check if data is a real pickle, not an LFS pointer."""
-    if isinstance(data, bytes):
-        # LFS pointer files start with "version https://git-lfs"
-        if data[:30].startswith(b"version https://git-lfs"):
-            return False
-        if len(data) < 100:
-            return False
-    return True
-
-
-def try_load_local(fname):
-    """Try to load .pkl from local repo folder."""
-    path = os.path.join(SCRIPT_DIR, fname)
-    if not os.path.exists(path):
-        return None, "not in local repo"
-
-    size = os.path.getsize(path)
-    if size < 100:
-        # Read first bytes to detect LFS pointer
-        with open(path, 'rb') as f:
-            head = f.read(50)
-        if head.startswith(b"version https://git-lfs"):
-            return None, f"local file is LFS pointer ({size} bytes)"
-        return None, f"local file too small ({size} bytes)"
-
+def scrape_folder_file_ids(folder_id, timeout=30):
+    """
+    Scrape the public Google Drive folder HTML to get file IDs.
+    Returns dict {filename: file_id}
+    """
+    url = f"https://drive.google.com/drive/folders/{folder_id}"
     try:
-        data = joblib.load(path)
-        return data, None
-    except Exception as e:
-        return None, f"local load error: {type(e).__name__}"
-
-
-def try_load_media_url(fname, timeout=60):
-    """Download from media.githubusercontent.com — LFS bypass."""
-    url = f"{GITHUB_MEDIA_BASE}/{fname}"
-    try:
-        r = requests.get(url, timeout=timeout, allow_redirects=True)
+        r = requests.get(url, timeout=timeout)
         if r.status_code != 200:
-            return None, f"HTTP {r.status_code}"
-        if not is_valid_pickle(r.content):
-            return None, f"got LFS pointer ({len(r.content)} bytes)"
-        data = joblib.load(BytesIO(r.content))
-        return data, None
-    except requests.exceptions.Timeout:
-        return None, "timeout"
+            return {}, f"HTTP {r.status_code}"
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        # Google embeds data in a JS variable — find file IDs
+        file_map = {}
+        # Method 1: search for IDs in the raw HTML
+        # File IDs are typically 28-44 char strings starting with 1
+        pattern = re.compile(r'"([a-zA-Z0-9_-]{25,50})"\s*,\s*"([^"]+\.pkl)"')
+        for m in pattern.finditer(r.text):
+            fid, fname = m.group(1), m.group(2)
+            if fname.endswith('.pkl'):
+                file_map[fname] = fid
+
+        # Method 2: look for /file/d/ID patterns
+        pattern2 = re.compile(
+            r'/file/d/([a-zA-Z0-9_-]{25,50})[^"]*"[^>]*>([^<]+\.pkl)'
+        )
+        for m in pattern2.finditer(r.text):
+            fid, fname = m.group(1), m.group(2)
+            if fname.endswith('.pkl') and fname not in file_map:
+                file_map[fname] = fid
+
+        if not file_map:
+            return {}, "could not find any .pkl file IDs in HTML"
+        return file_map, None
     except Exception as e:
-        return None, f"{type(e).__name__}"
+        return {}, f"{type(e).__name__}: {str(e)[:100]}"
 
 
-def bundle_from_data(data, fname, source):
-    """Convert loaded pickle data into a bundle."""
-    name = data.get("model_name", fname.replace(".pkl", ""))
-    return name, {
-        "model": data["model"],
-        "pipeline": data["feature_pipeline"],
-        "cv_f1": data.get("metrics", {}).get("cv_mean", 0.0),
-        "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
-        "val_v_ok": data.get("val_v_ok", False),
-        "val_w_ok": data.get("val_w_ok", False),
-        "source": source,
-    }
+def download_from_drive(file_id, dest_path, timeout=120):
+    """
+    Download a public Google Drive file by ID.
+    Returns (success: bool, error_msg: str or None)
+    """
+    try:
+        url = f"https://drive.google.com/uc?id={file_id}&export=download"
+        # gdown handles large-file confirmation automatically
+        gdown.download(id=file_id, output=dest_path,
+                       quiet=True, fuzzy=True)
+        if os.path.exists(dest_path) and os.path.getsize(dest_path) > 100:
+            return True, None
+        return False, "downloaded file too small"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {str(e)[:100]}"
 
 
 def load_all_ml_models():
-    """Load every model — local folder first, then media URL."""
+    """
+    Discover .pkl files in the public Google Drive folder,
+    download them (with local caching), and load them.
+    """
     models = {}
-    status = []  # (filename, source, is_ok, msg)
+    status = []
 
-    for fname in MODEL_FILES:
-        # 1) Local
-        data, err_local = try_load_local(fname)
-        if data is not None:
-            try:
-                name, bundle = bundle_from_data(data, fname, "local")
-                models[name] = bundle
-                status.append((fname, "local", True, name))
+    # Step 1: discover file IDs
+    with st.spinner("🔍 Discovering models in Google Drive folder..."):
+        file_map, err = scrape_folder_file_ids(GDRIVE_FOLDER_ID)
+
+    if err:
+        # Fallback: rely on manual known file IDs. But since we don't have
+        # them, mark all as failed and let the user know.
+        return {}, [(fname, "none", False,
+                     f"Could not read folder ({err})")
+                    for fname in WANTED_MODELS.keys()]
+
+    # Step 2: for each wanted model, download and load
+    for fname, model_key in WANTED_MODELS.items():
+        if fname not in file_map:
+            status.append((fname, "none", False, "not found in Drive folder"))
+            continue
+
+        fid = file_map[fname]
+        cache_path = os.path.join(CACHE_DIR, fname)
+
+        # Download if not already cached
+        if not os.path.exists(cache_path) or os.path.getsize(cache_path) < 100:
+            ok, err = download_from_drive(fid, cache_path)
+            if not ok:
+                status.append((fname, "drive", False, f"download: {err}"))
                 continue
-            except Exception as e:
-                err_local = f"local parse: {type(e).__name__}"
 
-        # 2) Media URL (LFS bypass)
-        data, err_media = try_load_media_url(fname)
-        if data is not None:
-            try:
-                name, bundle = bundle_from_data(data, fname, "media")
-                models[name] = bundle
-                status.append((fname, "media", True, name))
-                continue
-            except Exception as e:
-                err_media = f"media parse: {type(e).__name__}"
-
-        # 3) Both failed
-        status.append((fname, "none", False,
-                       f"local:[{err_local}] | media:[{err_media}]"))
+        # Load pickle
+        try:
+            data = joblib.load(cache_path)
+            name = data.get("model_name", fname.replace(".pkl", ""))
+            models[name] = {
+                "model": data["model"],
+                "pipeline": data["feature_pipeline"],
+                "cv_f1": data.get("metrics", {}).get("cv_mean", 0.0),
+                "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
+                "val_v_ok": data.get("val_v_ok", False),
+                "val_w_ok": data.get("val_w_ok", False),
+                "source": "gdrive",
+            }
+            status.append((fname, "gdrive", True, name))
+        except KeyError as e:
+            status.append((fname, "gdrive", False, f"missing key: {e}"))
+        except Exception as e:
+            status.append((fname, "gdrive", False,
+                           f"{type(e).__name__}: {str(e)[:80]}"))
 
     return models, status
 
 
-# Load models into session state
+# Load into session_state
 if "ml_models" not in st.session_state:
-    with st.spinner("🔄 Loading ML models..."):
-        _m, _s = load_all_ml_models()
+    _m, _s = load_all_ml_models()
     st.session_state["ml_models"] = _m
     st.session_state["ml_status"] = _s
 
@@ -365,13 +380,14 @@ with st.sidebar:
     st.header("⚙️ About")
     st.info(
         "**Rule-Based Classifier** + **ML Models Ensemble**\n\n"
-        "Uses 14 style matrix rules + all trained ML models."
+        "Uses 14 style matrix rules + all trained ML models "
+        "(loaded from Google Drive)."
     )
 
     st.markdown("---")
     st.header("📝 Sample Texts")
 
-    sample_v = """કોમ્પ્યૂટર : વિવિધ કાર્યક્રમમાં આપેલી સૂચના અનુસાર માહિતીસંગ્રહ અને માહિતીપ્રક્રમણ માટેનું વીજાણુસાધન. તે સંજ્ઞાઓનું ઝડપથી અને ચોકસાઈપૂર્વક રૂપાંતર કરી શકતું મશીન છે. આથી તેને ગણાય છે. કોમ્પ્યૂટરમાં દ્વિઅંકી સંજ્ઞા (binary code) 0 અને 1 વપરાય છે. વળી, ઍનાલિટિક એન્જિન (analytical engine) નામે ગણનયંત્ર ચાર્લ્સ બેબેજે બનાવ્યું હતું. તથા તે 1837માં બનાવવામાં આવ્યું હતું."""
+    sample_v = """કોમ્પ્યૂટર : વિવિધ કાર્યક્રમમાં આપેલી સૂચના અનુસાર માહિતીસંગ્રહ અને માહિતીપ્રક્રમણ માટેનું વીજાણુસાધન. તે સંજ્ઞાઓનું ઝડપથી અને ચોકસાઈપૂર્વક રૂપાંતર કરી શકતું મશીન છે. આથી તેને ગણાય છે. કોમ્પ્યુટરમાં દ્વિઅંકી સંજ્ઞા (binary code) 0 અને 1 વપરાય છે. વળી, ઍનાલિટિક એન્જિન (analytical engine) નામે ગણનયંત્ર ચાર્લ્સ બેબેજે બનાવ્યું હતું. તથા તે 1837માં બનાવવામાં આવ્યું હતું."""
 
     sample_w = """કમ્પ્યુટર એ એક ઇલેક્ટ્રોનિક ઉપકરણ છે જે માહિતીને સંગ્રહિત કરી શકે છે અને પ્રક્રિયા કરી શકે છે. આ ઉપકરણનો ઉપયોગ વિવિધ ક્ષેત્રોમાં કરવામાં આવે છે. ઉદાહરણ તરીકે, શિક્ષણ, આરોગ્ય સંભાળ, વ્યાપાર વગેરેમાં કમ્પ્યુટરનો ઉપયોગ કરવામાં આવે છે. કમ્પ્યુટરની શોધ ઘણા વૈજ્ઞાનિકો દ્વારા કરવામાં આવી હતી. જો કે, ચાર્લ્સ બેબેજને કમ્પ્યુટરના પિતા ગણવામાં આવે છે. મુખ્ય લેખ: કમ્પ્યુટરનો ઇતિહાસ [1][2]"""
 
@@ -413,19 +429,6 @@ with st.sidebar:
                 if not ok:
                     st.write(f"❌ `{fname}`")
                     st.caption(f"↳ {msg}")
-
-    st.markdown("---")
-    st.caption(f"📁 Script dir: `{SCRIPT_DIR}`")
-    try:
-        local_pkls = [f for f in os.listdir(SCRIPT_DIR) if f.endswith('.pkl')]
-        st.caption(f"📦 `.pkl` files in local repo: {len(local_pkls)}")
-        if local_pkls:
-            with st.expander("Local .pkl files"):
-                for f in local_pkls:
-                    size = os.path.getsize(os.path.join(SCRIPT_DIR, f))
-                    st.caption(f"`{f}` — {size:,} bytes")
-    except Exception as e:
-        st.caption(f"⚠ Could not list dir: {e}")
 
 
 # ============================================================================
@@ -797,9 +800,11 @@ if analyze_btn:
 
     if not ALL_ML_MODELS:
         st.error(
-            f"⚠️ **0 ML models loaded.**\n\n"
-            f"**Local path:** `{SCRIPT_DIR}`\n\n"
-            "Check the sidebar **❌ Failed** expander for the exact reason."
+            "⚠️ **0 ML models loaded.**\n\n"
+            "Check the sidebar **❌ Failed** expander for details. "
+            "The most likely cause is that the Google Drive folder "
+            "is not fully public, or the file discovery HTML format "
+            "changed. Try **🔄 Reload Models** in the sidebar."
         )
     else:
         with st.spinner(f"Running {len(ALL_ML_MODELS)} ML models..."):
