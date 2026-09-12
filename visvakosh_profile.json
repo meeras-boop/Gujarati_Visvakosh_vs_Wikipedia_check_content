@@ -1,0 +1,26 @@
+{
+  "corpus_size": 44,
+  "total_words": 75639,
+  "total_sentences": 4825,
+  "typical_word_count_range": [
+    242,
+    3195
+  ],
+  "typical_sentence_length_range": [
+    11.3,
+    20.6
+  ],
+  "typical_ttr_range": [
+    0.427,
+    0.695
+  ],
+  "visvakosh_marker_freq": 14.868130362833972,
+  "wikipedia_marker_freq": 0.0358133229365907,
+  "definition_first_ratio": 0.8409090909090909,
+  "passive_voice_ratio": 0.09263443022201416,
+  "english_gloss_ratio": 17.372839934484873,
+  "traditional_translit_ratio": 0.0032881094972755254,
+  "colon_freq_per_1000": 11.988258773186043,
+  "semicolon_freq_per_1000": 4.482154795658533,
+  "parentheses_freq_per_1000": 52.26682331656055
+}

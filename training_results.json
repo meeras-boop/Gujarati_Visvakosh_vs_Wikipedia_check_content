@@ -1,0 +1,137 @@
+{
+  "best_model": "SVC_RBF",
+  "best_cv_f1": 0.9702564102564104,
+  "best_test_acc": 0.9090909090909091,
+  "best_val_v_ok": true,
+  "best_val_w_ok": true,
+  "models_passing_both": 16,
+  "total_models": 20,
+  "all_models": [
+    {
+      "name": "LogisticRegression",
+      "cv_f1": 0.9393006993006991,
+      "test_acc": 0.9545454545454546,
+      "val_v_ok": true,
+      "val_w_ok": true
+    },
+    {
+      "name": "LogisticRegression_L1",
+      "cv_f1": 0.9393006993006991,
+      "test_acc": 1.0,
+      "val_v_ok": true,
+      "val_w_ok": true
+    },
+    {
+      "name": "LinearSVC",
+      "cv_f1": 0.9393006993006991,
+      "test_acc": 0.9545454545454546,
+      "val_v_ok": true,
+      "val_w_ok": true
+    },
+    {
+      "name": "SGDClassifier",
+      "cv_f1": 0.9075641025641026,
+      "test_acc": 0.9090909090909091,
+      "val_v_ok": true,
+      "val_w_ok": true
+    },
+    {
+      "name": "RidgeClassifier",
+      "cv_f1": 0.9538461538461538,
+      "test_acc": 1.0,
+      "val_v_ok": true,
+      "val_w_ok": true
+    },
+    {
+      "name": "PassiveAggressive",
+      "cv_f1": 0.9393006993006991,
+      "test_acc": 0.9545454545454546,
+      "val_v_ok": true,
+      "val_w_ok": true
+    },
+    {
+      "name": "Perceptron",
+      "cv_f1": 0.9227622377622378,
+      "test_acc": 0.9090909090909091,
+      "val_v_ok": true,
+      "val_w_ok": true
+    },
+    {
+      "name": "SVC_Linear",
+      "cv_f1": 0.9393006993006991,
+      "test_acc": 0.9545454545454546,
+      "val_v_ok": true,
+      "val_w_ok": true
+    },
+    {
+      "name": "SVC_RBF",
+      "cv_f1": 0.9702564102564104,
+      "test_acc": 0.9090909090909091,
+      "val_v_ok": true,
+      "val_w_ok": true
+    },
+    {
+      "name": "BernoulliNB",
+      "cv_f1": 0.7924461812697107,
+      "test_acc": 0.8181818181818182,
+      "val_v_ok": true,
+      "val_w_ok": false
+    },
+    {
+      "name": "DecisionTree",
+      "cv_f1": 0.9702564102564104,
+      "test_acc": 0.9545454545454546,
+      "val_v_ok": true,
+      "val_w_ok": true
+    },
+    {
+      "name": "RandomForest",
+      "cv_f1": 0.8678934137757667,
+      "test_acc": 0.9545454545454546,
+      "val_v_ok": true,
+      "val_w_ok": true
+    },
+    {
+      "name": "ExtraTrees",
+      "cv_f1": 0.8678934137757667,
+      "test_acc": 0.9545454545454546,
+      "val_v_ok": true,
+      "val_w_ok": true
+    },
+    {
+      "name": "GradientBoosting",
+      "cv_f1": 0.9702564102564104,
+      "test_acc": 0.9545454545454546,
+      "val_v_ok": true,
+      "val_w_ok": true
+    },
+    {
+      "name": "AdaBoost",
+      "cv_f1": 0.9702564102564104,
+      "test_acc": 0.9545454545454546,
+      "val_v_ok": true,
+      "val_w_ok": true
+    },
+    {
+      "name": "KNN",
+      "cv_f1": 0.9700699300699303,
+      "test_acc": 0.9090909090909091,
+      "val_v_ok": true,
+      "val_w_ok": true
+    },
+    {
+      "name": "MLP",
+      "cv_f1": 0.9067665667665669,
+      "test_acc": 0.9090909090909091,
+      "val_v_ok": true,
+      "val_w_ok": true
+    },
+    {
+      "name": "LDA",
+      "cv_f1": 0.9079853479853479,
+      "test_acc": 0.9545454545454546,
+      "val_v_ok": false,
+      "val_w_ok": true
+    }
+  ]
+}
