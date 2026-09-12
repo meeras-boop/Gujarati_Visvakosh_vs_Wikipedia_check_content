@@ -1,5 +1,5 @@
 # ============================================================================
-# streamlit_app.py — Rule-Based + All ML Models (with Explanations)
+# streamlit_app.py — Rule-Based + All ML Models (GitHub Root Load)
 # ============================================================================
 
 import streamlit as st
@@ -55,15 +55,12 @@ st.markdown("""
                     font-size: 0.8rem; font-family: monospace; }
     .stTextArea textarea { font-family: 'Noto Sans Gujarati', 'Shruti', sans-serif;
                            font-size: 15px; }
-    .vote-pill { display:inline-block; padding: 4px 12px; border-radius: 14px;
-                 margin: 3px; font-weight: bold; color: white; }
-    .vote-v { background: #28a745; }
-    .vote-w { background: #0066cc; }
 </style>
 """, unsafe_allow_html=True)
 
 
-st.markdown('<div class="main-title">📚 Gujarati Source Classifier</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">📚 Gujarati Source Classifier</div>',
+            unsafe_allow_html=True)
 st.markdown(
     '<div class="subtitle">Rule-based Visvakosh vs Wikipedia classification '
     'using style matrix (qualitative + quantitative) + ML models ensemble</div>',
@@ -87,7 +84,7 @@ with st.sidebar:
         "- Citation markers, wiki headings\n"
         "- Punctuation patterns\n"
         "- Lexical diversity metrics\n\n"
-        "Plus: loads all trained ML models and shows their "
+        "Plus: loads all trained ML models from GitHub and shows their "
         "individual predictions with reasons."
     )
 
@@ -110,26 +107,54 @@ with st.sidebar:
         st.session_state['sample_text'] = ""
 
     st.markdown("---")
-    st.header("🤖 ML Models")
-    st.caption(
-        "Place your trained `.pkl` model files in the `models/` folder "
-        "(or set `GITHUB_MODELS_BASE_URL`). All models are loaded "
-        "automatically and used for prediction."
-    )
+    st.header("🤖 ML Models Status")
+    if 'ml_models_status' in st.session_state:
+        st.write(st.session_state['ml_models_status'])
 
 
 # ============================================================================
-# MODEL LOADING (from local folder OR GitHub)
+# MODEL CONFIG — GITHUB ROOT
 # ============================================================================
 
-MODELS_DIR = os.environ.get("MODELS_DIR", "models")
-# Optional: set env var to download models from GitHub release/raw
-GITHUB_MODELS_BASE_URL = os.environ.get("GITHUB_MODELS_BASE_URL", "").rstrip("/")
+# 👇 YOUR GITHUB REPO — models are in ROOT (not models/ folder)
+GITHUB_MODELS_BASE_URL = os.environ.get(
+    "GITHUB_MODELS_BASE_URL",
+    "https://raw.githubusercontent.com/meeras-boob/Gujarati_Visvakosh_vs_Wikipedia_check_content/main"
+).rstrip("/")
+
+MODELS_DIR = os.environ.get("MODELS_DIR", "models")  # optional local fallback
+
+# Model filenames to try (in repo root)
+MODEL_FILES = [
+    "LogisticRegression.pkl",
+    "LogisticRegression_L1.pkl",
+    "LinearSVC.pkl",
+    "SGDClassifier.pkl",
+    "RidgeClassifier.pkl",
+    "PassiveAggressive.pkl",
+    "Perceptron.pkl",
+    "SVC_Linear.pkl",
+    "SVC_RBF.pkl",
+    "MultinomialNB.pkl",
+    "ComplementNB.pkl",
+    "BernoulliNB.pkl",
+    "DecisionTree.pkl",
+    "RandomForest.pkl",
+    "ExtraTrees.pkl",
+    "GradientBoosting.pkl",
+    "AdaBoost.pkl",
+    "KNN.pkl",
+    "MLP.pkl",
+    "LDA.pkl",
+]
 
 DENSE_ONLY = {'KNN', 'SVC_RBF', 'MLP', 'LDA', 'DecisionTree'}
 
 
-# -------- Tokenizer (must match training) --------
+# ============================================================================
+# TOKENIZER (must match training)
+# ============================================================================
+
 class GujaratiTokenizer:
     GUJ = re.compile(r'[\u0A80-\u0AFF]+')
     ENG = re.compile(r'[a-zA-Z]+')
@@ -149,7 +174,10 @@ class GujaratiTokenizer:
         return [s.strip() for s in re.split(r'(?<=[.!?])\s+', t) if len(s.strip()) > 2]
 
 
-# -------- Feature extraction (for ML models) --------
+# ============================================================================
+# FEATURE EXTRACTION (matches training)
+# ============================================================================
+
 class StyleMatrixExtractor:
     def __init__(self):
         self.tk = GujaratiTokenizer()
@@ -258,19 +286,23 @@ class StyleMatrixExtractor:
         }
 
 
+# ============================================================================
+# LOAD ALL ML MODELS — local first, then GitHub ROOT
+# ============================================================================
+
 @st.cache_resource(show_spinner=False)
 def load_all_ml_models():
-    """Load every .pkl model from local folder OR GitHub raw URLs."""
+    """Load .pkl models — first tries local folder, then GitHub ROOT."""
     models = {}
+    status_msgs = []
 
     # 1) Try local folder first
     if os.path.isdir(MODELS_DIR):
         for fname in sorted(os.listdir(MODELS_DIR)):
             if not fname.endswith(".pkl") or fname == "best_model.pkl":
                 continue
-            path = os.path.join(MODELS_DIR, fname)
             try:
-                data = joblib.load(path)
+                data = joblib.load(os.path.join(MODELS_DIR, fname))
                 name = data.get("model_name", fname.replace(".pkl", ""))
                 models[name] = {
                     "model": data["model"],
@@ -281,22 +313,20 @@ def load_all_ml_models():
                     "val_w_ok": data.get("val_w_ok", False),
                     "source": "local",
                 }
+                status_msgs.append(f"✓ {name} (local)")
             except Exception as e:
-                st.warning(f"⚠ Could not load {fname}: {e}")
+                status_msgs.append(f"⚠ local {fname}: {str(e)[:60]}")
 
-    # 2) If none found locally and GitHub URL is set, download from GitHub
-    if not models and GITHUB_MODELS_BASE_URL:
-        try:
-            # We assume a `models_manifest.json` at GITHUB_MODELS_BASE_URL
-            manifest_url = f"{GITHUB_MODELS_BASE_URL}/models_manifest.json"
-            r = requests.get(manifest_url, timeout=20)
-            r.raise_for_status()
-            manifest = r.json()  # {"models": ["LogisticRegression.pkl", ...]}
-            for fname in manifest.get("models", []):
+    # 2) Download from GitHub ROOT
+    if not models:
+        for fname in MODEL_FILES:
+            try:
                 url = f"{GITHUB_MODELS_BASE_URL}/{fname}"
-                r2 = requests.get(url, timeout=60)
-                r2.raise_for_status()
-                data = joblib.load(BytesIO(r2.content))
+                r = requests.get(url, timeout=60)
+                if r.status_code != 200:
+                    status_msgs.append(f"✗ {fname} (HTTP {r.status_code})")
+                    continue
+                data = joblib.load(BytesIO(r.content))
                 name = data.get("model_name", fname.replace(".pkl", ""))
                 models[name] = {
                     "model": data["model"],
@@ -307,13 +337,21 @@ def load_all_ml_models():
                     "val_w_ok": data.get("val_w_ok", False),
                     "source": "github",
                 }
-        except Exception as e:
-            st.warning(f"⚠ GitHub model download failed: {e}")
+                status_msgs.append(f"✓ {name}")
+            except Exception as e:
+                status_msgs.append(f"✗ {fname}: {str(e)[:60]}")
 
-    return models
+    return models, status_msgs
 
 
-ALL_ML_MODELS = load_all_ml_models()
+# Load models once at startup
+ALL_ML_MODELS, LOAD_STATUS = load_all_ml_models()
+
+# Save status to session for sidebar display
+st.session_state['ml_models_status'] = (
+    f"**Loaded: {len(ALL_ML_MODELS)} models**\n\n"
+    + "\n\n".join(f"- {s}" for s in LOAD_STATUS[:25])
+)
 
 
 # ============================================================================
@@ -321,22 +359,14 @@ ALL_ML_MODELS = load_all_ml_models()
 # ============================================================================
 
 def ml_predict_one(text, name, bundle):
-    """
-    Run text through one ML model and generate explanation.
-    Returns dict with prediction, confidence, and reason.
-    """
+    """Run text through one ML model and generate explanation."""
     model = bundle["model"]
     pipeline = bundle["pipeline"]
 
     out = {
-        "model": name,
-        "prediction": None,
-        "confidence": None,
-        "proba_v": None,
-        "proba_w": None,
-        "reason": "",
-        "signals": [],
-        "error": None,
+        "model": name, "prediction": None, "confidence": None,
+        "proba_v": None, "proba_w": None,
+        "reason": "", "signals": [], "error": None,
         "cv_f1": bundle.get("cv_f1", 0.0),
         "val_v_ok": bundle.get("val_v_ok", False),
         "val_w_ok": bundle.get("val_w_ok", False),
@@ -373,12 +403,9 @@ def ml_predict_one(text, name, bundle):
                 out["proba_w"] = 1.0 if pred == 1 else 0.0
 
         # ---------- REASON GENERATION ----------
-        # Recompute style features on the fly to explain the model's decision
         extractor = StyleMatrixExtractor()
         feats = extractor.extract(text)
-
-        reasons = []
-        signals = []
+        reasons, signals = [], []
 
         if pred == 1:  # Wikipedia
             if feats.get("w_markers_per_1000", 0) > feats.get("v_markers_per_1000", 0):
@@ -414,7 +441,6 @@ def ml_predict_one(text, name, bundle):
                     "Overall statistical profile (TF-IDF + style features) "
                     "matches Wikipedia training data"
                 )
-
         else:  # Visvakosh
             if feats.get("v_markers_per_1000", 0) > feats.get("w_markers_per_1000", 0):
                 reasons.append(
@@ -449,7 +475,6 @@ def ml_predict_one(text, name, bundle):
                     "Overall statistical profile matches Visvakosh training data"
                 )
 
-        # Model-level confidence note
         conf = out["confidence"] or 0.5
         conf_word = "high" if conf > 0.85 else "moderate" if conf > 0.65 else "low"
         reasons.append(f"Model confidence: {conf:.1%} ({conf_word})")
@@ -473,10 +498,7 @@ def ml_predict_one(text, name, bundle):
 
 def ml_predict_all(text):
     """Run text through all loaded ML models."""
-    results = []
-    for name, bundle in ALL_ML_MODELS.items():
-        results.append(ml_predict_one(text, name, bundle))
-    return results
+    return [ml_predict_one(text, n, b) for n, b in ALL_ML_MODELS.items()]
 
 
 # ============================================================================
@@ -726,22 +748,20 @@ if analyze_btn:
     if not ALL_ML_MODELS:
         st.warning(
             "⚠️ No ML models loaded. Make sure `.pkl` files are placed in the "
-            "`models/` folder, or set `GITHUB_MODELS_BASE_URL` to your GitHub "
-            "raw models path (with a `models_manifest.json`)."
+            "`models/` folder, or that the GitHub raw URL points to the repo "
+            "root containing the `.pkl` files."
         )
     else:
         with st.spinner(f"Running {len(ALL_ML_MODELS)} ML models..."):
             ml_results = ml_predict_all(text_input)
 
         # --- TOP-LEVEL SUMMARY ---
-        vote_counter = Counter()
         conf_v_sum = 0.0
         conf_w_sum = 0.0
         n_v, n_w = 0, 0
         for r in ml_results:
             if r["error"]:
                 continue
-            vote_counter[r["prediction"]] += 1
             if r["prediction"] == "Visvakosh":
                 n_v += 1
                 if r["confidence"]:
@@ -755,19 +775,12 @@ if analyze_btn:
         avg_v = (conf_v_sum / n_v) if n_v else 0
         avg_w = (conf_w_sum / n_w) if n_w else 0
 
-        # Ensemble verdict
         if n_v > n_w:
-            ens_verdict = "Visvakosh"
-            ens_css = "visvakosh-pred"
-            ens_emoji = "📖"
+            ens_verdict, ens_css, ens_emoji = "Visvakosh", "visvakosh-pred", "📖"
         elif n_w > n_v:
-            ens_verdict = "Wikipedia"
-            ens_css = "wikipedia-pred"
-            ens_emoji = "🌐"
+            ens_verdict, ens_css, ens_emoji = "Wikipedia", "wikipedia-pred", "🌐"
         else:
-            ens_verdict = "Tie"
-            ens_css = "unknown-pred"
-            ens_emoji = "⚖️"
+            ens_verdict, ens_css, ens_emoji = "Tie", "unknown-pred", "⚖️"
 
         st.markdown(
             f'<div class="prediction-box {ens_css}">'
@@ -787,7 +800,6 @@ if analyze_btn:
         # --- PER-MODEL DETAILED CARDS ---
         st.markdown("### 🔍 Per-Model Predictions & Reasoning")
 
-        # Sort: passing-both-validations first, then by CV F1
         sorted_results = sorted(
             ml_results,
             key=lambda r: (
@@ -820,7 +832,6 @@ if analyze_btn:
                 f'<span class="model-signal">{s}</span>' for s in r.get("signals", [])
             )
 
-            # Probability bar (if available)
             proba_html = ""
             if r["proba_v"] is not None and r["proba_w"] is not None:
                 pv = r["proba_v"] * 100
