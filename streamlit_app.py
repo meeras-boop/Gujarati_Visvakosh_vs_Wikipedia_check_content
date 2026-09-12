@@ -12,7 +12,6 @@ import joblib
 import requests
 from io import BytesIO
 from collections import Counter
-from difflib import SequenceMatcher
 
 from style_matrix_classifier import analyze_text
 
@@ -69,62 +68,17 @@ st.markdown(
 
 
 # ============================================================================
-# SIDEBAR
+# MODEL CONFIG — GITHUB ROOT (NO models/ folder)
 # ============================================================================
 
-with st.sidebar:
-    st.header("⚙️ About")
-    st.info(
-        "**Rule-Based Classifier** + **ML Models Ensemble**\n\n"
-        "Uses 14 style matrix rules based on published research findings:\n"
-        "- Definition-first opening\n"
-        "- Function word markers (તથા, વળી vs શામેલ, ઘણીવાર)\n"
-        "- Transliteration style (ૉ, ૅ vs ો, ે)\n"
-        "- Passive voice style\n"
-        "- Citation markers, wiki headings\n"
-        "- Punctuation patterns\n"
-        "- Lexical diversity metrics\n\n"
-        "Plus: loads all trained ML models from GitHub and shows their "
-        "individual predictions with reasons."
-    )
-
-    st.markdown("---")
-    st.header("📝 Sample Texts")
-
-    sample_v = """કોમ્પ્યૂટર : વિવિધ કાર્યક્રમમાં આપેલી સૂચના અનુસાર માહિતીસંગ્રહ અને માહિતીપ્રક્રમણ માટેનું વીજાણુસાધન. તે સંજ્ઞાઓનું ઝડપથી અને ચોકસાઈપૂર્વક રૂપાંતર કરી શકતું મશીન છે. આથી તેને ગણાય છે. કોમ્પ્યૂટરમાં દ્વિઅંકી સંજ્ઞા (binary code) 0 અને 1 વપરાય છે. વળી, ઍનાલિટિક એન્જિન (analytical engine) નામે ગણનયંત્ર ચાર્લ્સ બેબેજે બનાવ્યું હતું. તથા તે 1837માં બનાવવામાં આવ્યું હતું."""
-
-    sample_w = """કમ્પ્યુટર એ એક ઇલેક્ટ્રોનિક ઉપકરણ છે જે માહિતીને સંગ્રહિત કરી શકે છે અને પ્રક્રિયા કરી શકે છે. આ ઉપકરણનો ઉપયોગ વિવિધ ક્ષેત્રોમાં કરવામાં આવે છે. ઉદાહરણ તરીકે, શિક્ષણ, આરોગ્ય સંભાળ, વ્યાપાર વગેરેમાં કમ્પ્યુટરનો ઉપયોગ કરવામાં આવે છે. કમ્પ્યુટરની શોધ ઘણા વૈજ્ઞાનિકો દ્વારા કરવામાં આવી હતી. જો કે, ચાર્લ્સ બેબેજને કમ્પ્યુટરના પિતા ગણવામાં આવે છે. મુખ્ય લેખ: કમ્પ્યુટરનો ઇતિહાસ [1][2]"""
-
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("📖 Visvakosh Sample", use_container_width=True):
-            st.session_state['sample_text'] = sample_v
-    with c2:
-        if st.button("🌐 Wikipedia Sample", use_container_width=True):
-            st.session_state['sample_text'] = sample_w
-
-    if st.button("🗑️ Clear", use_container_width=True):
-        st.session_state['sample_text'] = ""
-
-    st.markdown("---")
-    st.header("🤖 ML Models Status")
-    if 'ml_models_status' in st.session_state:
-        st.write(st.session_state['ml_models_status'])
-
-
-# ============================================================================
-# MODEL CONFIG — GITHUB ROOT
-# ============================================================================
-
-# 👇 YOUR GITHUB REPO — models are in ROOT (not models/ folder)
-GITHUB_MODELS_BASE_URL = os.environ.get(
-    "GITHUB_MODELS_BASE_URL",
-    "https://raw.githubusercontent.com/meeras-boob/Gujarati_Visvakosh_vs_Wikipedia_check_content/main"
+# 👇 YOUR GITHUB REPO — models sit at the ROOT of main branch
+GITHUB_RAW_BASE = os.environ.get(
+    "GITHUB_RAW_BASE",
+    "https://raw.githubusercontent.com/meeras-boob/"
+    "Gujarati_Visvakosh_vs_Wikipedia_check_content/main"
 ).rstrip("/")
 
-MODELS_DIR = os.environ.get("MODELS_DIR", "models")  # optional local fallback
-
-# Model filenames to try (in repo root)
+# Exact filenames as they appear in your repo root (case-sensitive!)
 MODEL_FILES = [
     "LogisticRegression.pkl",
     "LogisticRegression_L1.pkl",
@@ -287,71 +241,153 @@ class StyleMatrixExtractor:
 
 
 # ============================================================================
-# LOAD ALL ML MODELS — local first, then GitHub ROOT
+# LOAD MODELS — GITHUB ROOT, WITH VISIBLE ERRORS
 # ============================================================================
 
-@st.cache_resource(show_spinner=False)
+def fetch_model_from_github(fname, timeout=30):
+    """Download one .pkl from GitHub root. Returns (data, error_msg)."""
+    url = f"{GITHUB_RAW_BASE}/{fname}"
+    try:
+        r = requests.get(url, timeout=timeout)
+        if r.status_code != 200:
+            return None, f"HTTP {r.status_code} at {url}"
+        if len(r.content) < 100:
+            return None, f"File too small ({len(r.content)} bytes)"
+        data = joblib.load(BytesIO(r.content))
+        return data, None
+    except requests.exceptions.Timeout:
+        return None, f"TIMEOUT downloading {url}"
+    except requests.exceptions.ConnectionError as e:
+        return None, f"CONNECTION ERROR: {str(e)[:100]}"
+    except Exception as e:
+        return None, f"{type(e).__name__}: {str(e)[:150]}"
+
+
 def load_all_ml_models():
-    """Load .pkl models — first tries local folder, then GitHub ROOT."""
+    """
+    Load every .pkl model from GitHub repo ROOT.
+    Returns (models_dict, status_list).
+    status_list items: (filename, 'ok'|'err', message)
+    """
     models = {}
-    status_msgs = []
+    status = []
 
-    # 1) Try local folder first
-    if os.path.isdir(MODELS_DIR):
-        for fname in sorted(os.listdir(MODELS_DIR)):
-            if not fname.endswith(".pkl") or fname == "best_model.pkl":
-                continue
-            try:
-                data = joblib.load(os.path.join(MODELS_DIR, fname))
-                name = data.get("model_name", fname.replace(".pkl", ""))
-                models[name] = {
-                    "model": data["model"],
-                    "pipeline": data["feature_pipeline"],
-                    "cv_f1": data.get("metrics", {}).get("cv_mean", 0.0),
-                    "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
-                    "val_v_ok": data.get("val_v_ok", False),
-                    "val_w_ok": data.get("val_w_ok", False),
-                    "source": "local",
-                }
-                status_msgs.append(f"✓ {name} (local)")
-            except Exception as e:
-                status_msgs.append(f"⚠ local {fname}: {str(e)[:60]}")
+    for fname in MODEL_FILES:
+        data, err = fetch_model_from_github(fname)
+        if err is not None:
+            status.append((fname, "err", err))
+            continue
+        try:
+            name = data.get("model_name", fname.replace(".pkl", ""))
+            models[name] = {
+                "model": data["model"],
+                "pipeline": data["feature_pipeline"],
+                "cv_f1": data.get("metrics", {}).get("cv_mean", 0.0),
+                "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
+                "val_v_ok": data.get("val_v_ok", False),
+                "val_w_ok": data.get("val_w_ok", False),
+                "source": "github",
+            }
+            status.append((fname, "ok", name))
+        except KeyError as e:
+            status.append((fname, "err",
+                           f"Missing key in .pkl: {e}. "
+                           f"Keys: {list(data.keys())}"))
+        except Exception as e:
+            status.append((fname, "err",
+                           f"{type(e).__name__}: {str(e)[:150]}"))
 
-    # 2) Download from GitHub ROOT
-    if not models:
-        for fname in MODEL_FILES:
-            try:
-                url = f"{GITHUB_MODELS_BASE_URL}/{fname}"
-                r = requests.get(url, timeout=60)
-                if r.status_code != 200:
-                    status_msgs.append(f"✗ {fname} (HTTP {r.status_code})")
-                    continue
-                data = joblib.load(BytesIO(r.content))
-                name = data.get("model_name", fname.replace(".pkl", ""))
-                models[name] = {
-                    "model": data["model"],
-                    "pipeline": data["feature_pipeline"],
-                    "cv_f1": data.get("metrics", {}).get("cv_mean", 0.0),
-                    "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
-                    "val_v_ok": data.get("val_v_ok", False),
-                    "val_w_ok": data.get("val_w_ok", False),
-                    "source": "github",
-                }
-                status_msgs.append(f"✓ {name}")
-            except Exception as e:
-                status_msgs.append(f"✗ {fname}: {str(e)[:60]}")
-
-    return models, status_msgs
+    return models, status
 
 
-# Load models once at startup
-ALL_ML_MODELS, LOAD_STATUS = load_all_ml_models()
+# Load once into session_state
+if "ml_models" not in st.session_state:
+    with st.spinner("🔄 Downloading models from GitHub..."):
+        _m, _s = load_all_ml_models()
+    st.session_state["ml_models"] = _m
+    st.session_state["ml_status"] = _s
 
-# Save status to session for sidebar display
-st.session_state['ml_models_status'] = (
-    f"**Loaded: {len(ALL_ML_MODELS)} models**\n\n"
-    + "\n\n".join(f"- {s}" for s in LOAD_STATUS[:25])
-)
+ALL_ML_MODELS = st.session_state["ml_models"]
+LOAD_STATUS   = st.session_state["ml_status"]
+
+
+# ============================================================================
+# SIDEBAR
+# ============================================================================
+
+with st.sidebar:
+    st.header("⚙️ About")
+    st.info(
+        "**Rule-Based Classifier** + **ML Models Ensemble**\n\n"
+        "Uses 14 style matrix rules based on published research findings:\n"
+        "- Definition-first opening\n"
+        "- Function word markers (તથા, વળી vs શામેલ, ઘણીવાર)\n"
+        "- Transliteration style (ૉ, ૅ vs ો, ે)\n"
+        "- Passive voice style\n"
+        "- Citation markers, wiki headings\n"
+        "- Punctuation patterns\n"
+        "- Lexical diversity metrics\n\n"
+        "Plus: loads all trained ML models from GitHub and shows their "
+        "individual predictions with reasons."
+    )
+
+    st.markdown("---")
+    st.header("📝 Sample Texts")
+
+    sample_v = """કોમ્પ્યૂટર : વિવિધ કાર્યક્રમમાં આપેલી સૂચના અનુસાર માહિતીસંગ્રહ અને માહિતીપ્રક્રમણ માટેનું વીજાણુસાધન. તે સંજ્ઞાઓનું ઝડપથી અને ચોકસાઈપૂર્વક રૂપાંતર કરી શકતું મશીન છે. આથી તેને ગણાય છે. કોમ્પ્યૂટરમાં દ્વિઅંકી સંજ્ઞા (binary code) 0 અને 1 વપરાય છે. વળી, ઍનાલિટિક એન્જિન (analytical engine) નામે ગણનયંત્ર ચાર્લ્સ બેબેજે બનાવ્યું હતું. તથા તે 1837માં બનાવવામાં આવ્યું હતું."""
+
+    sample_w = """કમ્પ્યુટર એ એક ઇલેક્ટ્રોનિક ઉપકરણ છે જે માહિતીને સંગ્રહિત કરી શકે છે અને પ્રક્રિયા કરી શકે છે. આ ઉપકરણનો ઉપયોગ વિવિધ ક્ષેત્રોમાં કરવામાં આવે છે. ઉદાહરણ તરીકે, શિક્ષણ, આરોગ્ય સંભાળ, વ્યાપાર વગેરેમાં કમ્પ્યુટરનો ઉપયોગ કરવામાં આવે છે. કમ્પ્યુટરની શોધ ઘણા વૈજ્ઞાનિકો દ્વારા કરવામાં આવી હતી. જો કે, ચાર્લ્સ બેબેજને કમ્પ્યુટરના પિતા ગણવામાં આવે છે. મુખ્ય લેખ: કમ્પ્યુટરનો ઇતિહાસ [1][2]"""
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("📖 Visvakosh Sample", use_container_width=True):
+            st.session_state['sample_text'] = sample_v
+    with c2:
+        if st.button("🌐 Wikipedia Sample", use_container_width=True):
+            st.session_state['sample_text'] = sample_w
+
+    if st.button("🗑️ Clear", use_container_width=True):
+        st.session_state['sample_text'] = ""
+
+    st.markdown("---")
+    st.header("🤖 ML Models Status")
+
+    if st.button("🔄 Reload Models from GitHub", use_container_width=True):
+        st.session_state.pop("ml_models", None)
+        st.session_state.pop("ml_status", None)
+        st.rerun()
+
+    if "ml_models" in st.session_state:
+        models = st.session_state["ml_models"]
+        status = st.session_state["ml_status"]
+        ok_count  = sum(1 for _, s, _ in status if s == "ok")
+        err_count = sum(1 for _, s, _ in status if s == "err")
+
+        if ok_count > 0:
+            st.success(f"✅ {ok_count} models loaded")
+        if err_count > 0:
+            st.error(f"❌ {err_count} failed")
+
+        with st.expander(f"📋 Loaded ({ok_count})", expanded=False):
+            for fname, s, msg in status:
+                if s == "ok":
+                    st.write(f"✅ `{fname}` → **{msg}**")
+
+        if err_count > 0:
+            with st.expander(f"⚠️ Failed ({err_count})", expanded=True):
+                for fname, s, msg in status:
+                    if s == "err":
+                        st.write(f"❌ `{fname}`")
+                        st.caption(f"↳ {msg}")
+                st.info(
+                    "**Common causes:**\n"
+                    "- Filename case mismatch "
+                    "(e.g., `SVC_rbf.pkl` vs `SVC_RBF.pkl`)\n"
+                    "- File has spaces/parens "
+                    "(e.g., `GradientBoosting (1).pkl`) — rename it\n"
+                    "- File not actually pushed to `main` branch\n"
+                    "- Raw URL test in browser returns 404"
+                )
 
 
 # ============================================================================
@@ -747,9 +783,9 @@ if analyze_btn:
 
     if not ALL_ML_MODELS:
         st.warning(
-            "⚠️ No ML models loaded. Make sure `.pkl` files are placed in the "
-            "`models/` folder, or that the GitHub raw URL points to the repo "
-            "root containing the `.pkl` files."
+            "⚠️ No ML models loaded. Check the sidebar **🤖 ML Models Status** "
+            "→ **⚠️ Failed** expander for the exact HTTP error per file. "
+            "Common cause: filename case mismatch or spaces in filename."
         )
     else:
         with st.spinner(f"Running {len(ALL_ML_MODELS)} ML models..."):
@@ -851,11 +887,11 @@ if analyze_btn:
                     f'</div>'
                 )
 
+            color = "#155724" if r["prediction"] == "Visvakosh" else "#004085"
             st.markdown(
                 f'<div class="model-card {card_class}">'
                 f'<div class="model-name">{icon} {r["model"]} → '
-                f'<span style="color:{"#155724" if r["prediction"]=="Visvakosh" else "#004085"};">'
-                f'{r["prediction"]}</span> '
+                f'<span style="color:{color};">{r["prediction"]}</span> '
                 f'<span style="font-size:0.85rem;color:#666;">'
                 f'(confidence: {conf:.1%})</span></div>'
                 f'<div style="font-size:0.85rem;color:#666;margin-top:4px;">'
