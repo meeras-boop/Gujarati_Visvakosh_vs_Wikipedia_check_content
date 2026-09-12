@@ -1,10 +1,18 @@
 # ============================================================================
-# streamlit_app.py  — Rule-Based Version (No ML, No .pkl needed)
+# streamlit_app.py — Rule-Based + All ML Models (with Explanations)
 # ============================================================================
 
 import streamlit as st
 import json
 import pandas as pd
+import numpy as np
+import os
+import re
+import joblib
+import requests
+from io import BytesIO
+from collections import Counter
+from difflib import SequenceMatcher
 
 from style_matrix_classifier import analyze_text
 
@@ -35,8 +43,22 @@ st.markdown("""
     .wikipedia-tag { display: inline-block; background-color: #0066cc;
                      color: white; padding: 3px 10px; border-radius: 12px;
                      margin: 3px; font-size: 0.85rem; }
+    .model-card { padding: 12px; border-radius: 8px; margin: 8px 0;
+                  border-left: 5px solid #999; background: #f9f9f9; }
+    .model-card-v { border-left-color: #28a745; background: #f0f9f2; }
+    .model-card-w { border-left-color: #0066cc; background: #eff6ff; }
+    .model-card-err { border-left-color: #dc3545; background: #fff5f5; }
+    .model-name { font-weight: bold; font-size: 1.05rem; }
+    .model-reason { color: #555; font-size: 0.92rem; margin-top: 6px; }
+    .model-signal { display: inline-block; background: #e9ecef; color: #333;
+                    padding: 2px 8px; border-radius: 10px; margin: 2px;
+                    font-size: 0.8rem; font-family: monospace; }
     .stTextArea textarea { font-family: 'Noto Sans Gujarati', 'Shruti', sans-serif;
                            font-size: 15px; }
+    .vote-pill { display:inline-block; padding: 4px 12px; border-radius: 14px;
+                 margin: 3px; font-weight: bold; color: white; }
+    .vote-v { background: #28a745; }
+    .vote-w { background: #0066cc; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -44,7 +66,7 @@ st.markdown("""
 st.markdown('<div class="main-title">📚 Gujarati Source Classifier</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="subtitle">Rule-based Visvakosh vs Wikipedia classification '
-    'using style matrix (qualitative + quantitative)</div>',
+    'using style matrix (qualitative + quantitative) + ML models ensemble</div>',
     unsafe_allow_html=True
 )
 
@@ -56,8 +78,7 @@ st.markdown(
 with st.sidebar:
     st.header("⚙️ About")
     st.info(
-        "**Rule-Based Classifier**\n\n"
-        "No ML model. No training data needed.\n\n"
+        "**Rule-Based Classifier** + **ML Models Ensemble**\n\n"
         "Uses 14 style matrix rules based on published research findings:\n"
         "- Definition-first opening\n"
         "- Function word markers (તથા, વળી vs શામેલ, ઘણીવાર)\n"
@@ -65,7 +86,9 @@ with st.sidebar:
         "- Passive voice style\n"
         "- Citation markers, wiki headings\n"
         "- Punctuation patterns\n"
-        "- Lexical diversity metrics"
+        "- Lexical diversity metrics\n\n"
+        "Plus: loads all trained ML models and shows their "
+        "individual predictions with reasons."
     )
 
     st.markdown("---")
@@ -85,6 +108,375 @@ with st.sidebar:
 
     if st.button("🗑️ Clear", use_container_width=True):
         st.session_state['sample_text'] = ""
+
+    st.markdown("---")
+    st.header("🤖 ML Models")
+    st.caption(
+        "Place your trained `.pkl` model files in the `models/` folder "
+        "(or set `GITHUB_MODELS_BASE_URL`). All models are loaded "
+        "automatically and used for prediction."
+    )
+
+
+# ============================================================================
+# MODEL LOADING (from local folder OR GitHub)
+# ============================================================================
+
+MODELS_DIR = os.environ.get("MODELS_DIR", "models")
+# Optional: set env var to download models from GitHub release/raw
+GITHUB_MODELS_BASE_URL = os.environ.get("GITHUB_MODELS_BASE_URL", "").rstrip("/")
+
+DENSE_ONLY = {'KNN', 'SVC_RBF', 'MLP', 'LDA', 'DecisionTree'}
+
+
+# -------- Tokenizer (must match training) --------
+class GujaratiTokenizer:
+    GUJ = re.compile(r'[\u0A80-\u0AFF]+')
+    ENG = re.compile(r'[a-zA-Z]+')
+    NUM = re.compile(r'[0-9]+')
+
+    @classmethod
+    def words(cls, text):
+        if not text:
+            return []
+        return cls.GUJ.findall(text) + cls.ENG.findall(text) + cls.NUM.findall(text)
+
+    @classmethod
+    def sentences(cls, text):
+        if not text:
+            return []
+        t = text.replace('।', '.')
+        return [s.strip() for s in re.split(r'(?<=[.!?])\s+', t) if len(s.strip()) > 2]
+
+
+# -------- Feature extraction (for ML models) --------
+class StyleMatrixExtractor:
+    def __init__(self):
+        self.tk = GujaratiTokenizer()
+        self.v_markers = [
+            'તથા', 'વળી', 'આથી', 'ગણાય', 'પ્રચલિત', 'આવાં', 'કેટલાંક',
+            'અલબત્ત', 'તદુપરાંત', 'દા.ત.', 'દા. ત.', 'જુઓ', 'એટલે કે',
+            'કહેવાય છે', 'તેમજ', 'ઉપરાંત', 'વિશેષ', 'એટલે', 'કહેવાય',
+            'કરાય છે', 'થાય છે', 'ઓળખાય છે', 'ગણાય છે'
+        ]
+        self.w_markers = [
+            'શામેલ', 'ઘણીવાર', 'કોઈપણ', 'વ્યાખ્યાયિત', 'ઉદાહરણ તરીકે',
+            'મોડેલ', 'સોફ્ટવેર', 'મુખ્ય લેખ', 'આ પણ જુઓ', 'જો કે',
+            'દ્વારા', 'સંદર્ભ', 'બાહ્ય કડીઓ', 'સ્રોત', 'ટીકા', 'વિવાદ',
+            'સક્ષમ', 'સમાવેશ', 'ઉલ્લેખ', 'પ્રોગ્રામ', 'ક્લસ્ટર',
+            'કરવામાં આવે છે', 'આપવામાં આવે છે', 'બનાવવામાં આવે છે',
+            'માનવામાં આવે છે', 'હતું', 'હતા', 'હતી'
+        ]
+
+    def extract(self, text: str) -> dict:
+        if not text or len(text) < 20:
+            return self._empty()
+        words = self.tk.words(text)
+        sentences = self.tk.sentences(text)
+        if len(words) < 5:
+            return self._empty()
+
+        wc = len(words)
+        cc = len(text)
+        sc = max(len(sentences), 1)
+
+        feats = {
+            'word_count': wc, 'log_word_count': np.log1p(wc),
+            'char_count': cc, 'log_char_count': np.log1p(cc),
+            'sentence_count': sc,
+            'avg_word_length': float(np.mean([len(w) for w in words])),
+        }
+
+        sl = [len(self.tk.words(s)) for s in sentences]
+        sl = [l for l in sl if l > 0]
+        feats['avg_sentence_length'] = float(np.mean(sl)) if sl else 0
+        feats['std_sentence_length'] = float(np.std(sl)) if len(sl) > 1 else 0
+        feats['max_sentence_length'] = float(max(sl)) if sl else 0
+        feats['min_sentence_length'] = float(min(sl)) if sl else 0
+
+        uniq = set(words)
+        feats['type_token_ratio'] = len(uniq) / wc
+        word_freq = Counter(words)
+        feats['hapax_ratio'] = sum(1 for c in word_freq.values() if c == 1) / max(len(uniq), 1)
+        feats['dis_ratio'] = sum(1 for c in word_freq.values() if c == 2) / max(len(uniq), 1)
+
+        v_c = sum(text.count(m) for m in self.v_markers)
+        w_c = sum(text.count(m) for m in self.w_markers)
+        feats['v_markers_per_1000'] = (v_c / wc) * 1000
+        feats['w_markers_per_1000'] = (w_c / wc) * 1000
+        feats['marker_diff_per_1000'] = ((v_c - w_c) / wc) * 1000
+        feats['marker_ratio_v'] = v_c / (v_c + w_c) if (v_c + w_c) > 0 else 0.5
+
+        for m in ['તથા', 'વળી', 'કહેવાય છે', 'એટલે', 'કરાય છે',
+                  'શામેલ', 'દ્વારા', 'સક્ષમ', 'ઉલ્લેખ', 'કરવામાં આવે છે']:
+            key = 'm_' + m.replace(' ', '_').replace('.', '')
+            feats[key] = text.count(m)
+
+        eng_chars = len(re.findall(r'[a-zA-Z]', text))
+        guj_chars = len(re.findall(r'[\u0A80-\u0AFF]', text))
+        feats['english_char_ratio'] = eng_chars / cc if cc > 0 else 0
+        feats['gujarati_char_ratio'] = guj_chars / cc if cc > 0 else 0
+        feats['script_ratio'] = guj_chars / (guj_chars + eng_chars + 1)
+
+        feats['colon_per_1000'] = (text.count(':') / wc) * 1000
+        feats['comma_per_1000'] = (text.count(',') / wc) * 1000
+        feats['paren_per_1000'] = ((text.count('(') + text.count(')')) / wc) * 1000
+        feats['danda_per_1000'] = (text.count('।') / wc) * 1000
+
+        first_200 = text[:200]
+        feats['colon_in_first_200'] = 1.0 if ':' in first_200 else 0.0
+        feats['def_in_first_200'] = 1.0 if any(
+            m in first_200 for m in ['એટલે', 'કહેવાય', 'ગણાય']
+        ) else 0.0
+
+        feats['hyphen_count'] = text.count('-')
+        feats['hyphen_per_1000'] = (text.count('-') / wc) * 1000
+        feats['space_comma_count'] = len(re.findall(r'\s,', text))
+        feats['space_comma_per_1000'] = (feats['space_comma_count'] / wc) * 1000
+        feats['comma_ratio'] = text.count(',') / max(text.count('.'), 1)
+
+        return feats
+
+    def _empty(self) -> dict:
+        return {
+            'word_count': 0, 'log_word_count': 0, 'char_count': 0,
+            'log_char_count': 0, 'sentence_count': 1, 'avg_word_length': 0,
+            'avg_sentence_length': 0, 'std_sentence_length': 0,
+            'max_sentence_length': 0, 'min_sentence_length': 0,
+            'type_token_ratio': 0, 'hapax_ratio': 0, 'dis_ratio': 0,
+            'v_markers_per_1000': 0, 'w_markers_per_1000': 0,
+            'marker_diff_per_1000': 0, 'marker_ratio_v': 0.5,
+            'm_તથા': 0, 'm_વળી': 0, 'm_કહેવાય_છે': 0, 'm_એટલે': 0,
+            'm_કરાય_છે': 0, 'm_શામેલ': 0, 'm_દ્વારા': 0, 'm_સક્ષમ': 0,
+            'm_ઉલ્લેખ': 0, 'm_કરવામાં_આવે_છે': 0,
+            'english_char_ratio': 0, 'gujarati_char_ratio': 0, 'script_ratio': 0,
+            'colon_per_1000': 0, 'comma_per_1000': 0, 'paren_per_1000': 0,
+            'danda_per_1000': 0, 'colon_in_first_200': 0, 'def_in_first_200': 0,
+            'hyphen_count': 0, 'hyphen_per_1000': 0,
+            'space_comma_count': 0, 'space_comma_per_1000': 0,
+            'comma_ratio': 0,
+        }
+
+
+@st.cache_resource(show_spinner=False)
+def load_all_ml_models():
+    """Load every .pkl model from local folder OR GitHub raw URLs."""
+    models = {}
+
+    # 1) Try local folder first
+    if os.path.isdir(MODELS_DIR):
+        for fname in sorted(os.listdir(MODELS_DIR)):
+            if not fname.endswith(".pkl") or fname == "best_model.pkl":
+                continue
+            path = os.path.join(MODELS_DIR, fname)
+            try:
+                data = joblib.load(path)
+                name = data.get("model_name", fname.replace(".pkl", ""))
+                models[name] = {
+                    "model": data["model"],
+                    "pipeline": data["feature_pipeline"],
+                    "cv_f1": data.get("metrics", {}).get("cv_mean", 0.0),
+                    "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
+                    "val_v_ok": data.get("val_v_ok", False),
+                    "val_w_ok": data.get("val_w_ok", False),
+                    "source": "local",
+                }
+            except Exception as e:
+                st.warning(f"⚠ Could not load {fname}: {e}")
+
+    # 2) If none found locally and GitHub URL is set, download from GitHub
+    if not models and GITHUB_MODELS_BASE_URL:
+        try:
+            # We assume a `models_manifest.json` at GITHUB_MODELS_BASE_URL
+            manifest_url = f"{GITHUB_MODELS_BASE_URL}/models_manifest.json"
+            r = requests.get(manifest_url, timeout=20)
+            r.raise_for_status()
+            manifest = r.json()  # {"models": ["LogisticRegression.pkl", ...]}
+            for fname in manifest.get("models", []):
+                url = f"{GITHUB_MODELS_BASE_URL}/{fname}"
+                r2 = requests.get(url, timeout=60)
+                r2.raise_for_status()
+                data = joblib.load(BytesIO(r2.content))
+                name = data.get("model_name", fname.replace(".pkl", ""))
+                models[name] = {
+                    "model": data["model"],
+                    "pipeline": data["feature_pipeline"],
+                    "cv_f1": data.get("metrics", {}).get("cv_mean", 0.0),
+                    "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
+                    "val_v_ok": data.get("val_v_ok", False),
+                    "val_w_ok": data.get("val_w_ok", False),
+                    "source": "github",
+                }
+        except Exception as e:
+            st.warning(f"⚠ GitHub model download failed: {e}")
+
+    return models
+
+
+ALL_ML_MODELS = load_all_ml_models()
+
+
+# ============================================================================
+# ML PREDICTION + REASONING
+# ============================================================================
+
+def ml_predict_one(text, name, bundle):
+    """
+    Run text through one ML model and generate explanation.
+    Returns dict with prediction, confidence, and reason.
+    """
+    model = bundle["model"]
+    pipeline = bundle["pipeline"]
+
+    out = {
+        "model": name,
+        "prediction": None,
+        "confidence": None,
+        "proba_v": None,
+        "proba_w": None,
+        "reason": "",
+        "signals": [],
+        "error": None,
+        "cv_f1": bundle.get("cv_f1", 0.0),
+        "val_v_ok": bundle.get("val_v_ok", False),
+        "val_w_ok": bundle.get("val_w_ok", False),
+    }
+
+    try:
+        X = pipeline.transform([text])
+        if name in DENSE_ONLY:
+            X = X.toarray()
+
+        pred = model.predict(X)[0]
+        out["prediction"] = "Wikipedia" if pred == 1 else "Visvakosh"
+
+        # Probabilities
+        if hasattr(model, "predict_proba"):
+            try:
+                p = model.predict_proba(X)[0]
+                out["proba_v"] = float(p[0])
+                out["proba_w"] = float(p[1])
+                out["confidence"] = float(max(p))
+            except Exception:
+                pass
+
+        # Fallback to decision_function
+        if out["confidence"] is None and hasattr(model, "decision_function"):
+            try:
+                d = float(model.decision_function(X)[0])
+                out["confidence"] = float(1 / (1 + np.exp(-abs(d))))
+                out["proba_w"] = float(1 / (1 + np.exp(-d)))
+                out["proba_v"] = 1.0 - out["proba_w"]
+            except Exception:
+                out["confidence"] = 1.0
+                out["proba_v"] = 1.0 if pred == 0 else 0.0
+                out["proba_w"] = 1.0 if pred == 1 else 0.0
+
+        # ---------- REASON GENERATION ----------
+        # Recompute style features on the fly to explain the model's decision
+        extractor = StyleMatrixExtractor()
+        feats = extractor.extract(text)
+
+        reasons = []
+        signals = []
+
+        if pred == 1:  # Wikipedia
+            if feats.get("w_markers_per_1000", 0) > feats.get("v_markers_per_1000", 0):
+                reasons.append(
+                    f"Wikipedia-specific markers dominate "
+                    f"({feats['w_markers_per_1000']:.1f}/1000 vs "
+                    f"{feats['v_markers_per_1000']:.1f}/1000 Visvakosh)"
+                )
+                signals.append(f"w_markers={feats['w_markers_per_1000']:.1f}")
+            if feats.get("space_comma_per_1000", 0) > 5:
+                reasons.append(
+                    f"Wikipedia-style spacing before commas detected "
+                    f"({feats['space_comma_per_1000']:.1f}/1000)"
+                )
+                signals.append(f"space_comma={feats['space_comma_per_1000']:.1f}")
+            if feats.get("english_char_ratio", 0) > 0.02:
+                reasons.append(
+                    f"Frequent English insertions/glosses "
+                    f"({feats['english_char_ratio']:.1%} of chars)"
+                )
+                signals.append(f"eng={feats['english_char_ratio']:.1%}")
+            if feats.get("hyphen_per_1000", 0) > 3:
+                reasons.append(
+                    f"Hyphenated neologisms typical of wiki translations "
+                    f"({feats['hyphen_per_1000']:.1f}/1000)"
+                )
+                signals.append(f"hyphen={feats['hyphen_per_1000']:.1f}")
+            if feats.get("colon_in_first_200", 0) == 0:
+                reasons.append("No definition-first colon in opening")
+                signals.append("no_def_colon")
+            if not reasons:
+                reasons.append(
+                    "Overall statistical profile (TF-IDF + style features) "
+                    "matches Wikipedia training data"
+                )
+
+        else:  # Visvakosh
+            if feats.get("v_markers_per_1000", 0) > feats.get("w_markers_per_1000", 0):
+                reasons.append(
+                    f"Visvakosh function-word markers dominate "
+                    f"({feats['v_markers_per_1000']:.1f}/1000 vs "
+                    f"{feats['w_markers_per_1000']:.1f}/1000 Wikipedia)"
+                )
+                signals.append(f"v_markers={feats['v_markers_per_1000']:.1f}")
+            if feats.get("colon_in_first_200", 0) == 1:
+                reasons.append("Definition-first pattern (colon in first 200 chars)")
+                signals.append("def_colon")
+            if feats.get("def_in_first_200", 0) == 1:
+                reasons.append("Encyclopedic 'એટલે/કહેવાય/ગણાય' in opening")
+                signals.append("def_opener")
+            if feats.get("danda_per_1000", 0) > 5:
+                reasons.append(
+                    f"High danda (।) punctuation usage "
+                    f"({feats['danda_per_1000']:.1f}/1000)"
+                )
+                signals.append(f"danda={feats['danda_per_1000']:.1f}")
+            if feats.get("english_char_ratio", 0) < 0.02:
+                reasons.append(
+                    f"Low English character ratio "
+                    f"({feats['english_char_ratio']:.1%})"
+                )
+                signals.append(f"eng={feats['english_char_ratio']:.1%}")
+            if feats.get("hyphen_per_1000", 0) < 2:
+                reasons.append("Rare hyphenated neologisms (traditional style)")
+                signals.append("low_hyphen")
+            if not reasons:
+                reasons.append(
+                    "Overall statistical profile matches Visvakosh training data"
+                )
+
+        # Model-level confidence note
+        conf = out["confidence"] or 0.5
+        conf_word = "high" if conf > 0.85 else "moderate" if conf > 0.65 else "low"
+        reasons.append(f"Model confidence: {conf:.1%} ({conf_word})")
+
+        if out["proba_v"] is not None and out["proba_w"] is not None:
+            reasons.append(
+                f"Vote probabilities — Visvakosh: {out['proba_v']:.1%}, "
+                f"Wikipedia: {out['proba_w']:.1%}"
+            )
+
+        out["reason"] = " • ".join(reasons)
+        out["signals"] = signals
+        return out
+
+    except Exception as e:
+        out["error"] = str(e)[:200]
+        out["prediction"] = "ERROR"
+        out["reason"] = f"Model error: {out['error']}"
+        return out
+
+
+def ml_predict_all(text):
+    """Run text through all loaded ML models."""
+    results = []
+    for name, bundle in ALL_ML_MODELS.items():
+        results.append(ml_predict_one(text, name, bundle))
+    return results
 
 
 # ============================================================================
@@ -319,3 +711,215 @@ if analyze_btn:
         mime="application/json",
         use_container_width=True
     )
+
+    # ========================================================================
+    # NEW SECTION — ALL ML MODELS PREDICTION + REASONING
+    # ========================================================================
+    st.markdown("---")
+    st.header("🤖 ML Models — Individual Predictions & Reasoning")
+    st.caption(
+        "Each trained model predicts independently. "
+        "Below each model, you can see **why** it made that prediction "
+        "(based on style features + probability)."
+    )
+
+    if not ALL_ML_MODELS:
+        st.warning(
+            "⚠️ No ML models loaded. Make sure `.pkl` files are placed in the "
+            "`models/` folder, or set `GITHUB_MODELS_BASE_URL` to your GitHub "
+            "raw models path (with a `models_manifest.json`)."
+        )
+    else:
+        with st.spinner(f"Running {len(ALL_ML_MODELS)} ML models..."):
+            ml_results = ml_predict_all(text_input)
+
+        # --- TOP-LEVEL SUMMARY ---
+        vote_counter = Counter()
+        conf_v_sum = 0.0
+        conf_w_sum = 0.0
+        n_v, n_w = 0, 0
+        for r in ml_results:
+            if r["error"]:
+                continue
+            vote_counter[r["prediction"]] += 1
+            if r["prediction"] == "Visvakosh":
+                n_v += 1
+                if r["confidence"]:
+                    conf_v_sum += r["confidence"]
+            else:
+                n_w += 1
+                if r["confidence"]:
+                    conf_w_sum += r["confidence"]
+
+        total = n_v + n_w
+        avg_v = (conf_v_sum / n_v) if n_v else 0
+        avg_w = (conf_w_sum / n_w) if n_w else 0
+
+        # Ensemble verdict
+        if n_v > n_w:
+            ens_verdict = "Visvakosh"
+            ens_css = "visvakosh-pred"
+            ens_emoji = "📖"
+        elif n_w > n_v:
+            ens_verdict = "Wikipedia"
+            ens_css = "wikipedia-pred"
+            ens_emoji = "🌐"
+        else:
+            ens_verdict = "Tie"
+            ens_css = "unknown-pred"
+            ens_emoji = "⚖️"
+
+        st.markdown(
+            f'<div class="prediction-box {ens_css}">'
+            f'{ens_emoji} ML Ensemble Verdict: <strong>{ens_verdict}</strong><br>'
+            f'<span style="font-size:1rem;">'
+            f'{n_v} Visvakosh / {n_w} Wikipedia out of {total} models'
+            f'</span></div>',
+            unsafe_allow_html=True
+        )
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("📖 Visvakosh Votes", n_v)
+        c2.metric("🌐 Wikipedia Votes", n_w)
+        c3.metric("Avg Visvakosh Conf", f"{avg_v:.1%}" if avg_v else "—")
+        c4.metric("Avg Wikipedia Conf", f"{avg_w:.1%}" if avg_w else "—")
+
+        # --- PER-MODEL DETAILED CARDS ---
+        st.markdown("### 🔍 Per-Model Predictions & Reasoning")
+
+        # Sort: passing-both-validations first, then by CV F1
+        sorted_results = sorted(
+            ml_results,
+            key=lambda r: (
+                not (r["val_v_ok"] and r["val_w_ok"]),
+                -r["cv_f1"],
+            )
+        )
+
+        for r in sorted_results:
+            if r["error"]:
+                st.markdown(
+                    f'<div class="model-card model-card-err">'
+                    f'<div class="model-name">❌ {r["model"]}</div>'
+                    f'<div class="model-reason">{r["reason"]}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+                continue
+
+            card_class = "model-card-v" if r["prediction"] == "Visvakosh" else "model-card-w"
+            icon = "📖" if r["prediction"] == "Visvakosh" else "🌐"
+            conf = r["confidence"] if r["confidence"] is not None else 0.5
+
+            badges = []
+            if r["val_v_ok"] and r["val_w_ok"]:
+                badges.append("✅ both validations passed")
+            badges.append(f"CV F1 = {r['cv_f1']:.4f}")
+
+            signals_html = "".join(
+                f'<span class="model-signal">{s}</span>' for s in r.get("signals", [])
+            )
+
+            # Probability bar (if available)
+            proba_html = ""
+            if r["proba_v"] is not None and r["proba_w"] is not None:
+                pv = r["proba_v"] * 100
+                pw = r["proba_w"] * 100
+                proba_html = (
+                    f'<div style="margin-top:8px;font-size:0.85rem;">'
+                    f'<div>📖 Visvakosh: <b>{pv:.1f}%</b> '
+                    f'<div style="background:#e9ecef;border-radius:4px;height:8px;'
+                    f'overflow:hidden;margin-top:2px;">'
+                    f'<div style="background:#28a745;width:{pv:.1f}%;height:100%;">'
+                    f'</div></div></div>'
+                    f'<div style="margin-top:4px;">🌐 Wikipedia: <b>{pw:.1f}%</b> '
+                    f'<div style="background:#e9ecef;border-radius:4px;height:8px;'
+                    f'overflow:hidden;margin-top:2px;">'
+                    f'<div style="background:#0066cc;width:{pw:.1f}%;height:100%;">'
+                    f'</div></div></div>'
+                    f'</div>'
+                )
+
+            st.markdown(
+                f'<div class="model-card {card_class}">'
+                f'<div class="model-name">{icon} {r["model"]} → '
+                f'<span style="color:{"#155724" if r["prediction"]=="Visvakosh" else "#004085"};">'
+                f'{r["prediction"]}</span> '
+                f'<span style="font-size:0.85rem;color:#666;">'
+                f'(confidence: {conf:.1%})</span></div>'
+                f'<div style="font-size:0.85rem;color:#666;margin-top:4px;">'
+                f'{" • ".join(badges)}</div>'
+                f'<div style="margin-top:6px;">{signals_html}</div>'
+                f'<div class="model-reason">💡 <b>Why?</b> {r["reason"]}</div>'
+                f'{proba_html}'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+        # --- SUMMARY TABLE ---
+        st.markdown("### 📊 Summary Table")
+        summary_rows = []
+        for r in sorted_results:
+            if r["error"]:
+                summary_rows.append({
+                    "Model": r["model"],
+                    "Prediction": "ERROR",
+                    "Confidence": "—",
+                    "Visvakosh %": "—",
+                    "Wikipedia %": "—",
+                    "CV F1": f"{r['cv_f1']:.4f}",
+                    "V-val": "—",
+                    "W-val": "—",
+                })
+            else:
+                summary_rows.append({
+                    "Model": r["model"],
+                    "Prediction": ("📖 " if r["prediction"] == "Visvakosh" else "🌐 ")
+                                  + r["prediction"],
+                    "Confidence": (f"{r['confidence']:.1%}"
+                                   if r["confidence"] is not None else "—"),
+                    "Visvakosh %": (f"{r['proba_v']:.1%}"
+                                    if r["proba_v"] is not None else "—"),
+                    "Wikipedia %": (f"{r['proba_w']:.1%}"
+                                    if r["proba_w"] is not None else "—"),
+                    "CV F1": f"{r['cv_f1']:.4f}",
+                    "V-val": "✓" if r["val_v_ok"] else "·",
+                    "W-val": "✓" if r["val_w_ok"] else "·",
+                })
+
+        st.dataframe(
+            pd.DataFrame(summary_rows),
+            use_container_width=True,
+            height=min(600, 40 + 35 * len(summary_rows))
+        )
+
+        # --- DOWNLOAD ML REPORT ---
+        st.markdown("### 📥 Download ML Report")
+        ml_report = {
+            "ensemble_verdict": ens_verdict,
+            "votes": {"visvakosh": n_v, "wikipedia": n_w, "total": total},
+            "models": [
+                {
+                    "model": r["model"],
+                    "prediction": r["prediction"],
+                    "confidence": r["confidence"],
+                    "proba_visvakosh": r["proba_v"],
+                    "proba_wikipedia": r["proba_w"],
+                    "cv_f1": r["cv_f1"],
+                    "val_v_ok": r["val_v_ok"],
+                    "val_w_ok": r["val_w_ok"],
+                    "reason": r["reason"],
+                    "signals": r["signals"],
+                    "error": r["error"],
+                }
+                for r in sorted_results
+            ],
+        }
+        st.download_button(
+            "⬇️ Download ML Predictions JSON",
+            data=json.dumps(ml_report, indent=2, ensure_ascii=False, default=str),
+            file_name=f"ml_predictions_{ens_verdict.lower()}.json",
+            mime="application/json",
+            use_container_width=True,
+            key="download_ml_report",
+        )
