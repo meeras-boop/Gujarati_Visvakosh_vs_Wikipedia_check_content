@@ -72,7 +72,7 @@ st.markdown(
 # ============================================================================
 
 GITHUB_RAW_BASE = (
-    "https://raw.githubusercontent.com/meeras-boob/"
+    "https://media.githubusercontent.com/media/meeras-boob/"
     "Gujarati_Visvakosh_vs_Wikipedia_check_content/main"
 )
 
