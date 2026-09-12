@@ -9,7 +9,11 @@ import numpy as np
 import os
 import re
 import glob
+import io
+import sys
+import types
 import joblib
+import pickle
 from collections import Counter
 
 from style_matrix_classifier import analyze_text
@@ -21,65 +25,11 @@ st.set_page_config(
     layout="wide"
 )
 
-st.markdown("""
-<style>
-    .main-title { font-size: 2.5rem; font-weight: bold; color: #1f4e79;
-                  text-align: center; margin-bottom: 0.5rem; }
-    .subtitle { font-size: 1.1rem; color: #555; text-align: center;
-                margin-bottom: 2rem; }
-    .prediction-box { padding: 1.5rem; border-radius: 10px; margin: 1rem 0;
-                      text-align: center; font-size: 1.5rem; font-weight: bold; }
-    .visvakosh-pred { background-color: #d4edda; color: #155724;
-                      border: 2px solid #28a745; }
-    .wikipedia-pred { background-color: #cce5ff; color: #004085;
-                      border: 2px solid #0066cc; }
-    .unknown-pred { background-color: #fff3cd; color: #856404;
-                    border: 2px solid #ffc107; }
-    .satisfied-tag { display: inline-block; background-color: #28a745;
-                     color: white; padding: 3px 10px; border-radius: 12px;
-                     margin: 3px; font-size: 0.85rem; }
-    .wikipedia-tag { display: inline-block; background-color: #0066cc;
-                     color: white; padding: 3px 10px; border-radius: 12px;
-                     margin: 3px; font-size: 0.85rem; }
-    .model-card { padding: 12px; border-radius: 8px; margin: 8px 0;
-                  border-left: 5px solid #999; background: #f9f9f9; }
-    .model-card-v { border-left-color: #28a745; background: #f0f9f2; }
-    .model-card-w { border-left-color: #0066cc; background: #eff6ff; }
-    .model-card-err { border-left-color: #dc3545; background: #fff5f5; }
-    .model-name { font-weight: bold; font-size: 1.05rem; }
-    .model-reason { color: #555; font-size: 0.92rem; margin-top: 6px; }
-    .model-signal { display: inline-block; background: #e9ecef; color: #333;
-                    padding: 2px 8px; border-radius: 10px; margin: 2px;
-                    font-size: 0.8rem; font-family: monospace; }
-    .stTextArea textarea { font-family: 'Noto Sans Gujarati', 'Shruti', sans-serif;
-                           font-size: 15px; }
-</style>
-""", unsafe_allow_html=True)
-
-
-st.markdown('<div class="main-title">📚 Gujarati Source Classifier</div>',
-            unsafe_allow_html=True)
-st.markdown(
-    '<div class="subtitle">Rule-based Visvakosh vs Wikipedia classification '
-    'using style matrix (qualitative + quantitative) + ML models ensemble</div>',
-    unsafe_allow_html=True
-)
-
 
 # ============================================================================
-# CONFIG — .pkl files are in the SAME folder as this script
-# ============================================================================
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# Files to skip (not actual classifiers)
-SKIP_FILES = {"best_model.pkl", "visvakosh_classifier.pkl"}
-
-DENSE_ONLY = {'KNN', 'SVC_RBF', 'MLP', 'LDA', 'DecisionTree'}
-
-
-# ============================================================================
-# TOKENIZER
+# ⚠️ CRITICAL — Define all classes that were in the training script
+#    These must match the training script's class definitions EXACTLY
+#    (same names, same methods, same attributes) so unpickling works.
 # ============================================================================
 
 class GujaratiTokenizer:
@@ -101,10 +51,6 @@ class GujaratiTokenizer:
         return [s.strip() for s in re.split(r'(?<=[.!?])\s+', t)
                 if len(s.strip()) > 2]
 
-
-# ============================================================================
-# FEATURE EXTRACTION
-# ============================================================================
 
 class StyleMatrixExtractor:
     def __init__(self):
@@ -218,21 +164,156 @@ class StyleMatrixExtractor:
         }
 
 
+class FeaturePipeline:
+    """Must match training script's FeaturePipeline."""
+    def __init__(self, max_word_features: int = 3000,
+                 max_char_features: int = 3000):
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.preprocessing import StandardScaler
+        self.extractor = StyleMatrixExtractor()
+        self.scaler = StandardScaler()
+        self.word_tfidf = TfidfVectorizer(
+            max_features=max_word_features,
+            ngram_range=(1, 3),
+            min_df=1,
+            max_df=0.95,
+            sublinear_tf=True,
+            token_pattern=r'[\u0A80-\u0AFF]+|[a-zA-Z]+'
+        )
+        self.char_tfidf = TfidfVectorizer(
+            analyzer='char_wb',
+            max_features=max_char_features,
+            ngram_range=(3, 5),
+            min_df=1,
+            max_df=0.95,
+            sublinear_tf=True
+        )
+        self.fitted = False
+        self.style_names = None
+
+    def fit_transform(self, texts):
+        from scipy.sparse import hstack, csr_matrix
+        sf = self._style(texts)
+        ss = self.scaler.fit_transform(sf)
+        wf = self.word_tfidf.fit_transform(texts)
+        cf = self.char_tfidf.fit_transform(texts)
+        self.fitted = True
+        return hstack([csr_matrix(ss), wf, cf]).tocsr()
+
+    def transform(self, texts):
+        from scipy.sparse import hstack, csr_matrix
+        sf = self._style(texts)
+        ss = self.scaler.transform(sf)
+        wf = self.word_tfidf.transform(texts)
+        cf = self.char_tfidf.transform(texts)
+        return hstack([csr_matrix(ss), wf, cf]).tocsr()
+
+    def _style(self, texts):
+        rows = [self.extractor.extract(t) for t in texts]
+        df = pd.DataFrame(rows).fillna(0).replace([np.inf, -np.inf], 0)
+        if self.style_names is None:
+            self.style_names = df.columns.tolist()
+        return df.values
+
+    def get_dims(self):
+        return {
+            'style': len(self.style_names) if self.style_names else 0,
+            'word': len(self.word_tfidf.vocabulary_) if hasattr(self.word_tfidf, 'vocabulary_') else 0,
+            'char': len(self.char_tfidf.vocabulary_) if hasattr(self.char_tfidf, 'vocabulary_') else 0,
+        }
+
+
 # ============================================================================
-# LOAD MODELS — DIRECTLY FROM LOCAL REPO FOLDER
+# ⚠️ PATCH __main__ SO UNPICKLING FINDS OUR CLASSES
+#    The .pkl files reference classes as `__main__.ClassName` (training script)
+#    We register our versions under BOTH `__main__` and `main`
+# ============================================================================
+
+def _register_classes_in_main():
+    """Make our classes available under both __main__ and main module names."""
+    # Get the current module (streamlit_app)
+    current = sys.modules[__name__]
+
+    # Register under "__main__"
+    main_module = sys.modules.get("__main__")
+    if main_module is not None:
+        for cls_name in ["GujaratiTokenizer", "StyleMatrixExtractor",
+                         "FeaturePipeline"]:
+            if hasattr(current, cls_name):
+                setattr(main_module, cls_name, getattr(current, cls_name))
+        # Also register the module itself as "main" if not present
+        if "main" not in sys.modules:
+            sys.modules["main"] = main_module
+
+    # If a "main" module already exists, populate it too
+    main_alias = sys.modules.get("main")
+    if main_alias is not None:
+        for cls_name in ["GujaratiTokenizer", "StyleMatrixExtractor",
+                         "FeaturePipeline"]:
+            if hasattr(current, cls_name):
+                setattr(main_alias, cls_name, getattr(current, cls_name))
+
+
+_register_classes_in_main()
+
+
+# Also inject as top-level names so pickle can find them
+# by simple name (some pickle formats store just "FeaturePipeline")
+for _cls_name in ["GujaratiTokenizer", "StyleMatrixExtractor", "FeaturePipeline"]:
+    globals()[_cls_name] = globals()[_cls_name]
+
+
+# ============================================================================
+# CUSTOM UNPICKLER — Remap __main__ / main → streamlit_app
+# ============================================================================
+
+class _RemapUnpickler(pickle.Unpickler):
+    """Remap any reference to __main__ or main module to our module."""
+    def find_class(self, module, name):
+        # If the pickle wants a class from __main__ or main,
+        # redirect to our module where we defined those classes
+        if module in ("__main__", "main", "streamlit_app"):
+            # Try our module first
+            this_module = sys.modules.get(__name__)
+            if this_module is not None and hasattr(this_module, name):
+                return getattr(this_module, name)
+            # Fall back to __main__
+            main_mod = sys.modules.get("__main__")
+            if main_mod is not None and hasattr(main_mod, name):
+                return getattr(main_mod, name)
+        # Default behavior for everything else
+        return super().find_class(module, name)
+
+
+def safe_joblib_load(path):
+    """Load a pickle file with module remapping to handle __main__ refs."""
+    with open(path, "rb") as f:
+        try:
+            return _RemapUnpickler(f).load()
+        except Exception:
+            # Retry with standard joblib.load as fallback
+            f.seek(0)
+            return joblib.load(f)
+
+
+# ============================================================================
+# CONFIG
+# ============================================================================
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SKIP_FILES = {"best_model.pkl", "visvakosh_classifier.pkl"}
+DENSE_ONLY = {'KNN', 'SVC_RBF', 'MLP', 'LDA', 'DecisionTree'}
+
+
+# ============================================================================
+# LOAD ALL MODELS
 # ============================================================================
 
 def load_all_ml_models():
-    """
-    Find all .pkl files in the same folder as this script and load them.
-    No HTTP, no Google Drive — just local disk.
-    """
     models = {}
-    status = []  # (filename, size_bytes, is_ok, msg)
+    status = []
 
-    # Find every .pkl file in the script directory
     pkl_paths = sorted(glob.glob(os.path.join(SCRIPT_DIR, "*.pkl")))
-
     if not pkl_paths:
         return models, status
 
@@ -240,24 +321,26 @@ def load_all_ml_models():
         fname = os.path.basename(path)
         size = os.path.getsize(path)
 
-        # Skip non-classifier files
         if fname in SKIP_FILES:
             status.append((fname, size, False, "skipped (not a classifier)"))
             continue
 
-        # Skip LFS pointer stubs
+        if fname.startswith("GradientBoosting (1)"):
+            status.append((fname, size, False, "skipped (duplicate)"))
+            continue
+
         if size < 200:
-            status.append((fname, size, False, f"too small ({size} bytes — LFS pointer?)"))
+            status.append((fname, size, False,
+                           f"too small ({size} bytes — LFS pointer?)"))
             continue
 
         try:
-            data = joblib.load(path)
+            data = safe_joblib_load(path)
             if not isinstance(data, dict):
                 status.append((fname, size, False,
                                f"expected dict, got {type(data).__name__}"))
                 continue
 
-            # Try to extract bundle
             name = data.get("model_name", fname.replace(".pkl", ""))
             if "model" not in data or "feature_pipeline" not in data:
                 status.append((fname, size, False,
@@ -292,6 +375,55 @@ LOAD_STATUS   = st.session_state["ml_status"]
 
 
 # ============================================================================
+# STYLES + UI
+# ============================================================================
+
+st.markdown("""
+<style>
+    .main-title { font-size: 2.5rem; font-weight: bold; color: #1f4e79;
+                  text-align: center; margin-bottom: 0.5rem; }
+    .subtitle { font-size: 1.1rem; color: #555; text-align: center;
+                margin-bottom: 2rem; }
+    .prediction-box { padding: 1.5rem; border-radius: 10px; margin: 1rem 0;
+                      text-align: center; font-size: 1.5rem; font-weight: bold; }
+    .visvakosh-pred { background-color: #d4edda; color: #155724;
+                      border: 2px solid #28a745; }
+    .wikipedia-pred { background-color: #cce5ff; color: #004085;
+                      border: 2px solid #0066cc; }
+    .unknown-pred { background-color: #fff3cd; color: #856404;
+                    border: 2px solid #ffc107; }
+    .satisfied-tag { display: inline-block; background-color: #28a745;
+                     color: white; padding: 3px 10px; border-radius: 12px;
+                     margin: 3px; font-size: 0.85rem; }
+    .wikipedia-tag { display: inline-block; background-color: #0066cc;
+                     color: white; padding: 3px 10px; border-radius: 12px;
+                     margin: 3px; font-size: 0.85rem; }
+    .model-card { padding: 12px; border-radius: 8px; margin: 8px 0;
+                  border-left: 5px solid #999; background: #f9f9f9; }
+    .model-card-v { border-left-color: #28a745; background: #f0f9f2; }
+    .model-card-w { border-left-color: #0066cc; background: #eff6ff; }
+    .model-card-err { border-left-color: #dc3545; background: #fff5f5; }
+    .model-name { font-weight: bold; font-size: 1.05rem; }
+    .model-reason { color: #555; font-size: 0.92rem; margin-top: 6px; }
+    .model-signal { display: inline-block; background: #e9ecef; color: #333;
+                    padding: 2px 8px; border-radius: 10px; margin: 2px;
+                    font-size: 0.8rem; font-family: monospace; }
+    .stTextArea textarea { font-family: 'Noto Sans Gujarati', 'Shruti', sans-serif;
+                           font-size: 15px; }
+</style>
+""", unsafe_allow_html=True)
+
+
+st.markdown('<div class="main-title">📚 Gujarati Source Classifier</div>',
+            unsafe_allow_html=True)
+st.markdown(
+    '<div class="subtitle">Rule-based Visvakosh vs Wikipedia classification '
+    'using style matrix (qualitative + quantitative) + ML models ensemble</div>',
+    unsafe_allow_html=True
+)
+
+
+# ============================================================================
 # SIDEBAR
 # ============================================================================
 
@@ -299,8 +431,7 @@ with st.sidebar:
     st.header("⚙️ About")
     st.info(
         "**Rule-Based Classifier** + **ML Models Ensemble**\n\n"
-        "Uses 14 style matrix rules + all trained ML models "
-        "(loaded directly from the repo folder)."
+        "Uses 14 style matrix rules + all trained ML models."
     )
 
     st.markdown("---")
@@ -402,7 +533,7 @@ def ml_predict_one(text, name, bundle):
         feats = extractor.extract(text)
         reasons, signals = [], []
 
-        if pred == 1:  # Wikipedia
+        if pred == 1:
             if feats.get("w_markers_per_1000", 0) > feats.get("v_markers_per_1000", 0):
                 reasons.append(
                     f"Wikipedia markers dominate "
@@ -433,7 +564,7 @@ def ml_predict_one(text, name, bundle):
                 signals.append("no_def_colon")
             if not reasons:
                 reasons.append("Statistical profile matches Wikipedia training")
-        else:  # Visvakosh
+        else:
             if feats.get("v_markers_per_1000", 0) > feats.get("w_markers_per_1000", 0):
                 reasons.append(
                     f"Visvakosh markers dominate "
