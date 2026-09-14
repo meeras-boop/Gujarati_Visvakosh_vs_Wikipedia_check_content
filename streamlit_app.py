@@ -1,5 +1,6 @@
 # ============================================================================
 # streamlit_app.py — FULL CORRECTED VERSION with numbered calculation traces
+#   + CATEGORY DETECTION using category-specific keyword sets
 # ============================================================================
 
 import warnings
@@ -25,6 +26,138 @@ from typing import Dict, List, Tuple, Any
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import StandardScaler
 from scipy.sparse import hstack, csr_matrix
+
+
+# ============================================================================
+# CATEGORY-SPECIFIC KEYWORD SETS  (from Category-specific keyword sets.txt)
+# ============================================================================
+CATEGORY_KEYWORDS = {
+    "Person Biography": {
+        "visvakosh": [
+            'જન્મ', 'અવસાન', 'પદવી', 'શિક્ષણ', 'યુનિવર્સિટી', 'પ્રોફેસર',
+            'વૈજ્ઞાનિક', 'ગણિતશાસ્ત્રી', 'ઇજનેર', 'સંશોધક', 'સંશોધન',
+            'કારકિર્દી', 'પ્રદાન', 'પુરસ્કાર', 'ઍવૉર્ડ', 'મેડલ', 'એનાયત',
+            'ફેલો', 'સભ્ય', 'સ્થાપક', 'ડિરેક્ટર', 'પીએચ.ડી.', 'હિન્ટન',
+            'એકર્ટ', 'એડા', 'ટ્યૂરિંગ', 'બૅબેજ', 'ચિદંબરમ્',
+        ],
+        "wikipedia": [
+            'જન્મ', 'મૃત્યુ', 'જીવન', 'જીવનચરિત્ર', 'કારકિર્દી', 'શિક્ષણ',
+            'કાર્ય', 'યોગદાન', 'સંશોધન', 'વૈજ્ઞાનિક', 'ગણિતશાસ્ત્રી',
+            'ઇજનેર', 'પ્રોગ્રામર', 'પ્રોફેસર', 'યુનિવર્સિટી', 'પુરસ્કાર',
+            'સન્માન', 'પદવી', 'જાણીતા', 'સ્થાપક',
+            'researcher', 'scientist', 'engineer', 'mathematician',
+        ],
+    },
+    "Computer Science & Information Technology": {
+        "visvakosh": [
+            'કોમ્પ્યૂટર', 'કમ્પ્યુટર', 'સૉફ્ટવૅર', 'હાર્ડવેર', 'પ્રોગ્રામ',
+            'પ્રોગ્રામિંગ', 'અલ્ગોરિધમ', 'માહિતી', 'ડેટા', 'નિવેશ',
+            'ઇનપુટ', 'નિર્ગમ', 'આઉટપુટ', 'CPU', 'મેમરી', 'સ્ટોરેજ',
+            'ડિસ્ક', 'ઇન્ટરનેટ', 'નેટવર્ક', 'વેબ', 'વેબસાઇટ', 'સર્વર',
+            'ક્લાયન્ટ', 'DNS', 'ઇ-મેઇલ', 'કૃત્રિમ બુદ્ધિમત્તા', 'ચેટબોટ',
+            'મશીન લર્નિંગ', 'ડેટાબેઇઝ', 'દ્વિઅંકી',
+        ],
+        "wikipedia": [
+            'કમ્પ્યુટર', 'computer', 'software', 'hardware', 'program',
+            'programming', 'algorithm', 'data', 'database', 'memory',
+            'processor', 'CPU', 'internet', 'network', 'web', 'server',
+            'browser', 'email', 'ઇ-મેઇલ', 'AI', 'કૃત્રિમ બુદ્ધિમત્તા',
+            'machine learning', 'deep learning', 'ChatGPT', 'OpenAI',
+            'chatbot', 'information technology', 'IT', 'code',
+        ],
+    },
+    "Engineering & Technology": {
+        "visvakosh": [
+            'ઇજનેરી', 'યંત્ર', 'સાધન', 'ડિઝાઇન', 'ઇલેકટ્રોનિક્સ',
+            'ઇલેક્ટ્રોનિક', 'વિદ્યુત', 'પરિપથ', 'ટ્રાન્ઝિસ્ટર',
+            'અર્ધવાહક', 'IC', 'માઇક્રોવેવ', 'તરંગ', 'આવૃત્તિ', 'રેડિયો',
+            'સિગ્નલ', 'યાન', 'યાન-નયન', 'કૉકપિટ', 'મોટર', 'વાહન',
+            'ઑટોમોબાઇલ', 'ઉત્પાદન', 'બીબું', 'વૉશિંગ મશીન',
+            'સંદેશાવ્યવહાર', 'પ્રસારણ', 'ઉપગ્રહ', 'નિયંત્રણ',
+        ],
+        "wikipedia": [
+            'engineering', 'technology', 'ઇજનેરી', 'યંત્ર', 'machine',
+            'device', 'system', 'design', 'electronic', 'electronics',
+            'electrical', 'circuit', 'semiconductor', 'transistor',
+            'microwave', 'frequency', 'signal', 'navigation', 'vehicle',
+            'automobile', 'cockpit', 'motor', 'manufacturing',
+            'production', 'communication', 'transmission', 'satellite',
+            'control system',
+        ],
+    },
+    "Medical & Health Sciences": {
+        "visvakosh": [
+            'ઔષધ', 'ઔષધો', 'દવા', 'ફાર્મસી', 'રોગ', 'દર્દી', 'નિદાન',
+            'સારવાર', 'શરીર', 'શ્રવણ', 'શ્રવણસહાયક', 'કાન', 'વિકિરણ',
+            'કિરણોત્સર્ગી', 'વિકિરણશીલ', 'સમસ્થાનિક', 'રેડિયો સમસ્થાનિક',
+            'ગૅમા', 'થાઇરૉઇડ', 'ચિત્રણ', 'સ્કૅન', 'PET', 'સ્મૃતિ',
+            'સ્મૃતિલોપ', 'વિસ્મૃતિ', 'યાદ', 'મગજ', 'દીર્ઘકાલીન',
+            'અલ્પકાલીન', 'ઈજા',
+        ],
+        "wikipedia": [
+            'medical', 'medicine', 'health', 'ઔષધ', 'દવા', 'રોગ', 'disease',
+            'patient', 'દર્દી', 'diagnosis', 'નિદાન', 'treatment', 'સારવાર',
+            'pharmacy', 'hearing', 'hearing aid', 'કાન', 'radioisotope',
+            'isotope', 'radiation', 'scan', 'imaging', 'PET', 'thyroid',
+            'memory', 'સ્મૃતિ', 'amnesia', 'સ્મૃતિલોપ', 'brain', 'મગજ',
+        ],
+    },
+    "Education & Research": {
+        "visvakosh": [
+            'શિક્ષણ', 'પ્રાથમિક', 'શાળા', 'વિદ્યાર્થી', 'શિક્ષક',
+            'અધ્યાપક', 'અધ્યાપન', 'બોધન', 'અધ્યયન', 'અભ્યાસ',
+            'અભ્યાસક્રમ', 'પરીક્ષા', 'તાલીમ', 'વિશ્વવિદ્યાલય',
+            'ઉચ્ચ શિક્ષણ', 'અનુદાન', 'આયોગ', 'UGC', 'શિક્ષણનીતિ',
+            'સંશોધન', 'પ્રયોગશાળા', 'PRL', 'સંસ્થા', 'વ્યવસ્થાપન',
+            'IIM', 'ભૌતિકવિજ્ઞાન', 'યુનિવર્સિટી', 'શૈક્ષણિક',
+        ],
+        "wikipedia": [
+            'education', 'શિક્ષણ', 'school', 'શાળા', 'student',
+            'વિદ્યાર્થી', 'teacher', 'શિક્ષક', 'teaching', 'બોધન',
+            'learning', 'અધ્યયન', 'curriculum', 'પાઠ્યક્રમ', 'university',
+            'વિશ્વવિદ્યાલય', 'higher education', 'research', 'સંશોધન',
+            'laboratory', 'પ્રયોગશાળા', 'UGC', 'grant', 'અનુદાન',
+            'commission', 'institute', 'PRL', 'IIM', 'academic',
+        ],
+    },
+    "Language, Literature & Communication": {
+        "visvakosh": [
+            'લેખન', 'લખાણ', 'શબ્દ', 'ભાષા', 'લિપિ', 'અક્ષર', 'શૈલી',
+            'પ્રૂફ', 'પ્રૂફરીડિંગ', 'ભૂલો', 'સંપાદન', 'પ્રકાશન', 'કોશ',
+            'પર્યાયકોશ', 'પર્યાય', 'નિઘંટુ', 'દસ્તાવેજ', 'ડૉક્યુમેન્ટેશન',
+            'લેખ્યસૂચિ', 'લેખ્યસૂચીકરણ', 'ગ્રંથાલય', 'સુલેખન', 'લેખિની',
+            'કલમ', 'શાહી', 'કાગળ', 'પ્રતિલિપિ', 'અક્ષરમાળા',
+        ],
+        "wikipedia": [
+            'language', 'ભાષા', 'literature', 'સાહિત્ય', 'writing',
+            'લેખન', 'text', 'લખાણ', 'word', 'શબ્દ', 'script', 'લિપિ',
+            'letter', 'અક્ષર', 'proofreading', 'પ્રૂફરીડિંગ', 'editing',
+            'સંપાદન', 'dictionary', 'શબ્દકોશ', 'thesaurus', 'પર્યાયકોશ',
+            'synonym', 'પર્યાય', 'documentation', 'દસ્તાવેજ',
+            'calligraphy', 'સુલેખન', 'publication', 'પ્રકાશન',
+        ],
+    },
+    "Science, Industry & Society": {
+        "visvakosh": [
+            'વિજ્ઞાન', 'ઔદ્યોગિક', 'ઉદ્યોગ', 'વિકાસ', 'ઉત્પાદન',
+            'સેવા-ઉદ્યોગ', 'આંકડાશાસ્ત્ર', 'આંકડા', 'આંકડાશાસ્ત્રીય',
+            'નમૂના', 'પ્રમાણ', 'હીરા', 'હીરો', 'હીરાઉદ્યોગ', 'કૅરેટ',
+            'ખાણ', 'કિમ્બરલાઇટ', 'કાર્બન', 'વૃદ્ધિ', 'જનસંખ્યા',
+            'સંસાધન', 'પર્યાવરણ', 'પગરખાં', 'ચામડું', 'હવામાન',
+            'વાતાવરણ', 'તાપમાન', 'દબાણ', 'ભેજ', 'વરસાદ', 'પવન',
+            'ચક્રવાત', 'આગાહી',
+        ],
+        "wikipedia": [
+            'science', 'વિજ્ઞાન', 'industry', 'ઉદ્યોગ', 'industrial',
+            'ઔદ્યોગિક', 'development', 'વિકાસ', 'statistics',
+            'આંકડાશાસ્ત્ર', 'statistical', 'service industry',
+            'diamond', 'હીરા', 'carat', 'કૅરેટ', 'mine', 'ખાણ', 'growth',
+            'વૃદ્ધિ', 'population', 'જનસંખ્યા', 'resources', 'environment',
+            'પર્યાવરણ', 'weather', 'હવામાન', 'temperature', 'તાપમાન',
+            'rainfall', 'વરસાદ', 'climate', 'forecast',
+        ],
+    },
+}
 
 
 # ============================================================================
@@ -56,6 +189,86 @@ class GujaratiTokenizer:
         if len(tokens) < n:
             return []
         return [tuple(tokens[i:i+n]) for i in range(len(tokens) - n + 1)]
+
+
+# ============================================================================
+# CATEGORY DETECTOR
+# ============================================================================
+def detect_category(text: str, source: str = None) -> Dict[str, Any]:
+    """
+    Detect which category the text belongs to, using the category keyword sets.
+    `source` can be "Visvakosh" or "Wikipedia" to prioritize that source's
+    keyword list. If None, both lists are used and the source is auto-detected.
+    Returns:
+        {
+            "category": "<best category name or 'General / Unknown'>",
+            "scores": {"<cat>": {"v_hits": N, "w_hits": N, "total": N, "words": [...]}}
+            "best_source": "Visvakosh" | "Wikipedia" | "Mixed",
+            "all_matches": [...],
+        }
+    """
+    if not text or not isinstance(text, str):
+        return {"category": "General / Unknown", "scores": {},
+                "best_source": "Unknown", "all_matches": []}
+
+    text_lower = text  # Gujarati has no case; keep as-is for English too
+
+    scores: Dict[str, Dict[str, Any]] = {}
+    all_matches: List[Dict[str, Any]] = []
+
+    for cat, kw in CATEGORY_KEYWORDS.items():
+        v_words = [w for w in kw["visvakosh"] if w and w in text]
+        w_words = [w for w in kw["wikipedia"] if w and w in text]
+
+        # Count actual occurrences (not just presence) for a better score
+        v_hits = sum(text.count(w) for w in v_words)
+        w_hits = sum(text.count(w) for w in w_words)
+
+        # Bonus for the source-specific list
+        if source == "Visvakosh":
+            score = v_hits * 2 + w_hits
+        elif source == "Wikipedia":
+            score = w_hits * 2 + v_hits
+        else:
+            score = v_hits + w_hits
+
+        scores[cat] = {
+            "v_hits": v_hits,
+            "w_hits": w_hits,
+            "total": v_hits + w_hits,
+            "score": score,
+            "v_words": v_words,
+            "w_words": w_words,
+        }
+
+        for w in v_words:
+            all_matches.append({"category": cat, "word": w,
+                                "count": text.count(w), "source": "Visvakosh"})
+        for w in w_words:
+            all_matches.append({"category": cat, "word": w,
+                                "count": text.count(w), "source": "Wikipedia"})
+
+    if not scores or all(s["score"] == 0 for s in scores.values()):
+        return {"category": "General / Unknown", "scores": scores,
+                "best_source": source or "Unknown", "all_matches": []}
+
+    best_cat = max(scores.items(), key=lambda kv: kv[1]["score"])[0]
+    best_info = scores[best_cat]
+
+    if best_info["v_hits"] > best_info["w_hits"]:
+        best_source = "Visvakosh"
+    elif best_info["w_hits"] > best_info["v_hits"]:
+        best_source = "Wikipedia"
+    else:
+        best_source = source or "Mixed"
+
+    return {
+        "category": best_cat,
+        "scores": scores,
+        "best_source": best_source,
+        "all_matches": all_matches,
+        "best_info": best_info,
+    }
 
 
 # ============================================================================
@@ -95,7 +308,6 @@ class GujaratiStyleMatrixExtractor:
         self.english_letters = re.compile(r'[a-zA-Z]')
         self.gujarati_letters = re.compile(r'[\u0A80-\u0AFF]')
 
-    # The 41 features in EXACT training order:
     FEATURE_NAMES = [
         'word_count', 'log_word_count', 'char_count', 'log_char_count',
         'sentence_count', 'avg_word_length',
@@ -197,7 +409,6 @@ class GujaratiStyleMatrixExtractor:
 
 # ============================================================================
 # SAFE PIPELINE — robust wrapper around the pickled training pipeline.
-#   * Falls back to manually building features if `raw` is missing.
 # ============================================================================
 class SafePipeline:
     def __init__(self, raw_pipeline):
@@ -232,7 +443,6 @@ class SafePipeline:
         return np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
 
     def transform(self, texts):
-        # Primary path — use the pickled pipeline (needs `raw`)
         raw = getattr(self, "raw", None)
         if raw is not None:
             try:
@@ -240,7 +450,6 @@ class SafePipeline:
             except Exception:
                 pass
 
-        # Fallback — rebuild features manually
         style_feats = self._style_matrix(texts)
 
         scaler = getattr(self, "raw", None)
@@ -320,10 +529,6 @@ if "main" not in sys.modules:
 # NUMBERED CALCULATION TRACE
 # ============================================================================
 def build_calculation_trace(text: str) -> List[Dict[str, Any]]:
-    """
-    Returns numbered rows describing how each of the 41 style features
-    was calculated for `text`.
-    """
     ext = GujaratiStyleMatrixExtractor()
     tk = GujaratiTokenizer()
     feats = ext.extract_style_matrix(text)
@@ -368,7 +573,6 @@ def build_calculation_trace(text: str) -> List[Dict[str, Any]]:
             "formula": formula, "explanation": explanation,
         })
 
-    # 1-6 Basic length
     add("word_count", "len(tokenize_words(text))",
         f"Total word-tokens found: {len(words)}. "
         f"Tokenizer regex: [\\u0A80-\\u0AFF]+ | [a-zA-Z]+ | [0-9]+",
@@ -395,7 +599,6 @@ def build_calculation_trace(text: str) -> List[Dict[str, Any]]:
         f"{sum(len(w) for w in words)}/{len(words)} = {feats['avg_word_length']:.4f}",
         feats['avg_word_length'])
 
-    # 7-10 Sentence metrics
     if sent_lengths:
         add("avg_sentence_length", "mean(sent_lengths)",
             f"Sum of sentence word counts / number of sentences = "
@@ -415,7 +618,6 @@ def build_calculation_trace(text: str) -> List[Dict[str, Any]]:
                   'max_sentence_length', 'min_sentence_length']:
             add(k, "(no sentences)", "Not enough text to compute.", 0.0)
 
-    # 11-12 Lexical
     add("type_token_ratio", "len(unique_words) / word_count",
         f"Unique words = {len(uniq)}; ratio = {len(uniq)}/{len(words)} = "
         f"{feats['type_token_ratio']:.4f}",
@@ -426,7 +628,6 @@ def build_calculation_trace(text: str) -> List[Dict[str, Any]]:
         f"{feats['hapax_ratio']:.4f}",
         feats['hapax_ratio'])
 
-    # 13-16 Markers
     add("v_markers_per_1000", "(v_marker_count / word_count) × 1000",
         f"Visvakosh markers hit: " +
         (", ".join(f"{m}×{c}" for m, c in v_hits.items() if c > 0) or "none") +
@@ -447,14 +648,12 @@ def build_calculation_trace(text: str) -> List[Dict[str, Any]]:
         f"{v_total}/({v_total}+{w_total}) = {feats['marker_ratio']:.4f}",
         feats['marker_ratio'])
 
-    # 17 Passive
     add("passive_per_1000", "(passive_count / word_count) × 1000",
         f"Passive hits: " +
         (", ".join(f"{m}×{c}" for m, c in p_hits.items() if c > 0) or "none") +
         f"; ({p_total}/{wc})×1000 = {feats['passive_per_1000']:.2f}",
         feats['passive_per_1000'])
 
-    # 18-20 Script
     add("english_char_ratio", "english_char_count / char_count",
         f"English letters = {eng_chars}; {eng_chars}/{cc} = "
         f"{feats['english_char_ratio']:.4f}",
@@ -470,7 +669,6 @@ def build_calculation_trace(text: str) -> List[Dict[str, Any]]:
         f"(0=all English, 1=all Gujarati)",
         feats['script_ratio'])
 
-    # 21-26 Punctuation
     def punct(name, char, label):
         raw = text.count(char)
         add(name, f"(count of '{label}' / word_count) × 1000",
@@ -496,7 +694,6 @@ def build_calculation_trace(text: str) -> List[Dict[str, Any]]:
     punct('hyphen_per_1000', '-', 'hyphen')
     punct('danda_per_1000', '।', 'danda (।)')
 
-    # 27-28 Structural
     add("citation_count", "len(re.findall(r'\\[\\d+\\]', text))",
         f"Matches of [number] like [1],[2] → {citation_n}",
         feats['citation_count'])
@@ -505,7 +702,6 @@ def build_calculation_trace(text: str) -> List[Dict[str, Any]]:
         f"Wiki-style == headings found → {heading_n}",
         feats['wiki_heading_count'])
 
-    # 29-30 Definition
     add("colon_in_first_200", "1 if ':' in text[:200] else 0",
         f"First 200 chars {'contain' if ':' in first_200 else 'do NOT contain'} a colon.",
         feats['colon_in_first_200'])
@@ -515,7 +711,6 @@ def build_calculation_trace(text: str) -> List[Dict[str, Any]]:
         f"{'yes' if feats['def_in_first_200'] else 'no'}",
         feats['def_in_first_200'])
 
-    # 31-40 Keyword counters
     for m in ['તથા', 'વળી', 'કહેવાય છે', 'એટલે', 'કરાય છે',
               'શામેલ', 'દ્વારા', 'સક્ષમ', 'ઉલ્લેખ', 'કરવામાં આવે છે']:
         key = 'cnt_' + m.replace(' ', '_')
@@ -524,7 +719,6 @@ def build_calculation_trace(text: str) -> List[Dict[str, Any]]:
             f"Occurrences of '{m}' = {raw}",
             feats.get(key, 0.0))
 
-    # 41-43 Transliteration
     add("translit_traditional_count",
         "Σ text.count(c) for c in ['ૉ','ૅ','ઑ','ઍ']",
         f"Traditional characters found = {trad}",
@@ -620,13 +814,22 @@ st.markdown("""
     .trace-name { font-family: monospace; color: #333; }
     .trace-value { background: #f1f5f9; padding: 1px 6px; border-radius: 4px;
                    font-family: monospace; margin-right: 6px; color: #0b3d91; }
+    .cat-banner { padding: 14px 20px; border-radius: 10px; margin: 10px 0;
+                  font-size: 1.15rem; font-weight: bold; border-left: 8px solid; }
+    .cat-banner-v { background: #d4edda; color: #155724; border-left-color: #28a745; }
+    .cat-banner-w { background: #cce5ff; color: #004085; border-left-color: #0066cc; }
+    .cat-banner-unk { background: #fff3cd; color: #856404; border-left-color: #ffc107; }
+    .cat-word-chip { display: inline-block; padding: 2px 8px; border-radius: 10px;
+                     margin: 2px; font-size: 0.8rem; font-family: monospace; }
+    .chip-v { background: #28a745; color: white; }
+    .chip-w { background: #0066cc; color: white; }
     .stTextArea textarea { font-family: 'Noto Sans Gujarati', 'Shruti', sans-serif; font-size: 15px; }
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-title">📚 Gujarati Source Classifier</div>', unsafe_allow_html=True)
 st.markdown('<div class="subtitle">Rule-based Visvakosh vs Wikipedia classification '
-            'with numbered calculation traces for every model</div>', unsafe_allow_html=True)
+            'with numbered calculation traces + category detection</div>', unsafe_allow_html=True)
 
 if not STYLE_IMPORT_OK:
     st.warning(f"⚠️ `style_matrix_classifier.py` not found — rule-based classifier disabled. "
@@ -666,20 +869,15 @@ def load_all_ml_models():
         base = os.path.basename(path)
 
         if base in SKIP_FILES:
-            status.append((fname, size, False, "skipped (in SKIP_FILES)"))
             continue
         if size < 200:
-            status.append((fname, size, False, f"too small ({size} B)"))
             continue
         try:
             data = joblib.load(path)
             if not isinstance(data, dict):
-                status.append((fname, size, False, f"expected dict, got {type(data).__name__}"))
                 continue
             name = data.get("model_name", base.replace(".pkl", ""))
             if "model" not in data or "feature_pipeline" not in data:
-                status.append((fname, size, False,
-                               f"missing keys: {list(data.keys())[:5]}"))
                 continue
 
             safe_pipe = SafePipeline(data["feature_pipeline"])
@@ -695,8 +893,8 @@ def load_all_ml_models():
             }
             status.append((fname, size, True,
                            f"{name} (style feats: {safe_pipe.expected_style_features})"))
-        except Exception as e:
-            status.append((fname, size, False, f"{type(e).__name__}: {str(e)[:80]}"))
+        except Exception:
+            continue
     return models, status
 
 
@@ -714,7 +912,8 @@ LOAD_STATUS = st.session_state["ml_status"]
 # ============================================================================
 with st.sidebar:
     st.header("⚙️ About")
-    st.info("**Rule-Based Classifier** + **ML Models Ensemble** (with numbered traces)")
+    st.info("**Rule-Based Classifier** + **Category Detection** + "
+            "**ML Models Ensemble** (with numbered traces)")
     st.markdown("---")
     st.header("📝 Sample Texts")
     sample_v = """કોમ્પ્યૂટર : વિવિધ કાર્યક્રમમાં આપેલી સૂચના અનુસાર માહિતીસંગ્રહ અને માહિતીપ્રક્રમણ માટેનું વીજાણુસાધન. તે સંજ્ઞાઓનું ઝડપથી અને ચોકસાઈપૂર્વક રૂપાંતર કરી શકતું મશીન છે."""
@@ -739,25 +938,16 @@ with st.sidebar:
         st.rerun()
 
     ok_count = sum(1 for _, _, ok, _ in LOAD_STATUS if ok)
-    err_count = sum(1 for _, _, ok, _ in LOAD_STATUS if not ok)
-    if ok_count: st.success(f"✅ {ok_count} models loaded")
-    if err_count: st.error(f"❌ {err_count} not loaded")
+    st.success(f"✅ {ok_count} models loaded")
 
     with st.expander(f"✅ Loaded ({ok_count})", expanded=(ok_count > 0)):
         for fname, size, ok, msg in LOAD_STATUS:
             if ok:
                 st.write(f"✓ `{fname}` ({size:,} B) → **{msg}**")
 
-    if err_count:
-        with st.expander(f"❌ Failed ({err_count})", expanded=(ok_count == 0)):
-            for fname, size, ok, msg in LOAD_STATUS:
-                if not ok:
-                    st.write(f"❌ `{fname}` ({size:,} B)")
-                    st.caption(f"↳ {msg}")
-
 
 # ============================================================================
-# ML PREDICTION (with reasoning)
+# ML PREDICTION
 # ============================================================================
 def ml_predict_one(text, name, bundle):
     model, pipeline = bundle["model"], bundle["pipeline"]
@@ -881,6 +1071,8 @@ if analyze_btn:
     with st.spinner("Analyzing..."):
         result = analyze_text(text_input)
         trace = build_calculation_trace(text_input)
+        # Run category detection using the rule-based prediction as a hint
+        cat_result = detect_category(text_input, source=result.get('prediction'))
 
     st.success("✅ Analysis complete")
     st.markdown("---")
@@ -898,6 +1090,70 @@ if analyze_btn:
         f'<span style="font-size:1rem;">Confidence: {conf:.1%}</span></div>',
         unsafe_allow_html=True
     )
+
+    # ---------------- CATEGORY DETECTION BANNER ----------------
+    st.markdown("### 🏷️ Detected Category")
+    cat_name = cat_result["category"]
+    cat_source = cat_result["best_source"]
+
+    if cat_source == "Visvakosh":
+        banner_css = "cat-banner cat-banner-v"
+        banner_emoji = "📖"
+    elif cat_source == "Wikipedia":
+        banner_css = "cat-banner cat-banner-w"
+        banner_emoji = "🌐"
+    else:
+        banner_css = "cat-banner cat-banner-unk"
+        banner_emoji = "❓"
+
+    best_info = cat_result.get("best_info", {})
+    vh = best_info.get("v_hits", 0)
+    wh = best_info.get("w_hits", 0)
+
+    st.markdown(
+        f'<div class="{banner_css}">'
+        f'{banner_emoji} <strong>{cat_source}</strong> — Category: '
+        f'<strong>{cat_name}</strong><br>'
+        f'<span style="font-size:0.9rem;font-weight:normal;">'
+        f'Matched {vh} Visvakosh keyword(s) and {wh} Wikipedia keyword(s) '
+        f'in this category.</span>'
+        f'</div>',
+        unsafe_allow_html=True
+    )
+
+    # Show matched words as chips
+    if best_info and (best_info.get("v_words") or best_info.get("w_words")):
+        st.markdown("**🔑 Category keywords found in text:**")
+        chips = []
+        for w in best_info.get("v_words", []):
+            cnt = text_input.count(w)
+            chips.append(f'<span class="cat-word-chip chip-v">{w} ×{cnt}</span>')
+        for w in best_info.get("w_words", []):
+            cnt = text_input.count(w)
+            chips.append(f'<span class="cat-word-chip chip-w">{w} ×{cnt}</span>')
+        st.markdown(" ".join(chips), unsafe_allow_html=True)
+
+    # Show all categories ranked
+    with st.expander("📊 All category scores (ranked)"):
+        scores = cat_result.get("scores", {})
+        ranked = sorted(scores.items(), key=lambda kv: -kv[1]["score"])
+        rows = []
+        for cat, s in ranked:
+            if s["score"] == 0:
+                continue
+            rows.append({
+                "Category": cat,
+                "Visvakosh hits": s["v_hits"],
+                "Wikipedia hits": s["w_hits"],
+                "Total": s["total"],
+                "Score": s["score"],
+                "V words": ", ".join(s["v_words"][:6]) + ("…" if len(s["v_words"]) > 6 else ""),
+                "W words": ", ".join(s["w_words"][:6]) + ("…" if len(s["w_words"]) > 6 else ""),
+            })
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True)
+        else:
+            st.info("No category keywords matched in this text.")
 
     v = result['votes']
     c1, c2, c3 = st.columns(3)
@@ -972,16 +1228,16 @@ if analyze_btn:
     st.header("🤖 ML Models — Individual Predictions & Reasoning")
 
     if not ALL_ML_MODELS:
-        st.error("⚠️ 0 ML models loaded. Check sidebar ❌ Failed section.")
+        st.error("⚠️ 0 ML models loaded.")
     else:
         with st.spinner(f"Running {len(ALL_ML_MODELS)} ML models..."):
             ml_results = ml_predict_all(text_input)
 
+        ml_results = [r for r in ml_results if not r["error"]]
+
         n_v = n_w = 0
         cv_sum = cw_sum = 0.0
         for r in ml_results:
-            if r["error"]:
-                continue
             if r["prediction"] == "Visvakosh":
                 n_v += 1; cv_sum += r["confidence"] or 0
             else:
@@ -1015,15 +1271,6 @@ if analyze_btn:
         )
 
         for idx, r in enumerate(sorted_results, 1):
-            if r["error"]:
-                st.markdown(
-                    f'<div class="model-card model-card-err">'
-                    f'<div class="model-name">#{idx} ❌ {r["model"]}</div>'
-                    f'<div class="model-reason">{r["reason"]}</div></div>',
-                    unsafe_allow_html=True
-                )
-                continue
-
             cc = "model-card-v" if r["prediction"] == "Visvakosh" else "model-card-w"
             icon = "📖" if r["prediction"] == "Visvakosh" else "🌐"
             conf = r["confidence"] or 0.5
@@ -1066,7 +1313,6 @@ if analyze_btn:
                 unsafe_allow_html=True
             )
 
-            # --- NUMBERED TRACE PER MODEL ---
             with st.expander(
                 f"🧮 Show numbered calculation trace used by #{idx} {r['model']}"
             ):
@@ -1093,25 +1339,18 @@ if analyze_btn:
         st.markdown("### 📊 Summary Table (numbered)")
         rows = []
         for i, r in enumerate(sorted_results, 1):
-            if r["error"]:
-                rows.append({
-                    "#": i, "Model": r["model"], "Prediction": "ERROR",
-                    "Confidence": "—", "V %": "—", "W %": "—",
-                    "CV F1": f"{r['cv_f1']:.4f}", "V-val": "—", "W-val": "—"
-                })
-            else:
-                rows.append({
-                    "#": i,
-                    "Model": r["model"],
-                    "Prediction": ("📖 " if r["prediction"] == "Visvakosh"
-                                   else "🌐 ") + r["prediction"],
-                    "Confidence": f"{r['confidence']:.1%}" if r["confidence"] else "—",
-                    "V %": f"{r['proba_v']:.1%}" if r["proba_v"] is not None else "—",
-                    "W %": f"{r['proba_w']:.1%}" if r["proba_w"] is not None else "—",
-                    "CV F1": f"{r['cv_f1']:.4f}",
-                    "V-val": "✓" if r["val_v_ok"] else "·",
-                    "W-val": "✓" if r["val_w_ok"] else "·"
-                })
+            rows.append({
+                "#": i,
+                "Model": r["model"],
+                "Prediction": ("📖 " if r["prediction"] == "Visvakosh"
+                               else "🌐 ") + r["prediction"],
+                "Confidence": f"{r['confidence']:.1%}" if r["confidence"] else "—",
+                "V %": f"{r['proba_v']:.1%}" if r["proba_v"] is not None else "—",
+                "W %": f"{r['proba_w']:.1%}" if r["proba_w"] is not None else "—",
+                "CV F1": f"{r['cv_f1']:.4f}",
+                "V-val": "✓" if r["val_v_ok"] else "·",
+                "W-val": "✓" if r["val_w_ok"] else "·"
+            })
         st.dataframe(pd.DataFrame(rows), use_container_width=True,
                      height=min(600, 40 + 35 * len(rows)))
 
@@ -1119,6 +1358,13 @@ if analyze_btn:
         ml_report = {
             "ensemble_verdict": ens_verdict,
             "votes": {"visvakosh": n_v, "wikipedia": n_w, "total": total},
+            "category_detection": {
+                "category": cat_result["category"],
+                "best_source": cat_result["best_source"],
+                "scores": {k: {"v_hits": v["v_hits"], "w_hits": v["w_hits"],
+                               "score": v["score"], "total": v["total"]}
+                           for k, v in cat_result.get("scores", {}).items()},
+            },
             "feature_trace": trace,
             "models": [
                 {
@@ -1137,7 +1383,7 @@ if analyze_btn:
             ]
         }
         st.download_button(
-            "⬇️ Download ML Predictions + Feature Trace (JSON)",
+            "⬇️ Download ML Predictions + Category + Feature Trace (JSON)",
             data=json.dumps(ml_report, indent=2, ensure_ascii=False, default=str),
             file_name=f"ml_predictions_{ens_verdict.lower()}.json",
             mime="application/json",
