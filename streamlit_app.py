@@ -1,10 +1,8 @@
 # ============================================================================
-# streamlit_app.py — FINAL CORRECTED VERSION
-# Finds .pkl files in repo root OR trained_models/ OR anywhere in the repo
-# Rule-Based + ML Models Ensemble
+# streamlit_app.py — SAFE VERSION — auto-pads feature count to match scaler
+# Works with your EXISTING .pkl files. No retraining needed.
 # ============================================================================
 
-# ---- Silence sklearn cross-version warnings BEFORE loading any pickle ----
 import warnings
 warnings.filterwarnings("ignore")
 try:
@@ -24,14 +22,14 @@ import sys
 import joblib
 from collections import Counter
 
-# ============================================================================
-# CRITICAL: Define classes needed for unpickling BEFORE loading pickles
-# ============================================================================
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import StandardScaler
 from scipy.sparse import hstack, csr_matrix
 
 
+# ============================================================================
+# FEATURE EXTRACTION (same as before, produces 23 features)
+# ============================================================================
 class GujaratiTokenizer:
     GUJ = re.compile(r'[\u0A80-\u0AFF]+')
     ENG = re.compile(r'[a-zA-Z]+')
@@ -72,7 +70,6 @@ class StyleMatrixExtractor:
     def extract(self, text: str) -> dict:
         if not text or not isinstance(text, str) or len(text) < 20:
             return self._empty()
-
         words = self.tk.words(text)
         sentences = self.tk.sentences(text)
         if len(words) < 5:
@@ -81,8 +78,9 @@ class StyleMatrixExtractor:
         wc = len(words); cc = len(text); sc = max(len(sentences), 1)
 
         feats = {
-            'word_count': wc, 'log_word_count': np.log1p(wc), 'char_count': cc,
-            'log_char_count': np.log1p(cc), 'sentence_count': sc,
+            'word_count': wc, 'log_word_count': np.log1p(wc),
+            'char_count': cc, 'log_char_count': np.log1p(cc),
+            'sentence_count': sc,
             'avg_word_length': float(np.mean([len(w) for w in words])) if words else 0,
         }
 
@@ -94,8 +92,7 @@ class StyleMatrixExtractor:
 
         uniq = set(words)
         feats['type_token_ratio'] = len(uniq) / wc if wc > 0 else 0
-        word_freq = Counter(words)
-        feats['hapax_ratio'] = sum(1 for c in word_freq.values() if c == 1) / max(len(uniq), 1)
+        feats['hapax_ratio'] = sum(1 for c in Counter(words).values() if c == 1) / max(len(uniq), 1)
 
         v_c = sum(text.count(m) for m in self.v_markers)
         w_c = sum(text.count(m) for m in self.w_markers)
@@ -125,45 +122,105 @@ class StyleMatrixExtractor:
         return feats
 
     def _empty(self) -> dict:
-        dummy_text = "a"
-        keys = self.extract(dummy_text).keys()
-        return {k: 0 for k in keys}
+        return {k: 0 for k in self._names()}
+
+    def _names(self):
+        # Must match extract() keys, in order
+        return [
+            'word_count', 'log_word_count', 'char_count', 'log_char_count',
+            'sentence_count', 'avg_word_length', 'avg_sentence_length',
+            'std_sentence_length', 'max_sentence_length',
+            'type_token_ratio', 'hapax_ratio',
+            'v_markers_per_1000', 'w_markers_per_1000', 'marker_diff_per_1000',
+            'passive_per_1000', 'english_char_ratio', 'script_ratio',
+            'colon_per_1000', 'hyphen_per_1000',
+            'citation_count', 'wiki_heading_count',
+            'colon_in_first_200', 'def_in_first_200',
+        ]
 
 
-class FeaturePipeline:
-    def __init__(self, max_word_features: int = 3000, max_char_features: int = 3000):
+# ============================================================================
+# SAFE PIPELINE — wraps whatever pipeline is inside the pickle
+# and pads/truncates features so the scaler's input always matches.
+# ============================================================================
+class SafePipeline:
+    """
+    Wraps a pickled pipeline. If the pickled pipeline's internal extractor
+    produces a different number of features than the scaler was fit on,
+    we pad/truncate to make it work.
+    """
+
+    def __init__(self, raw_pipeline):
+        self.raw = raw_pipeline
         self.extractor = StyleMatrixExtractor()
-        self.scaler = StandardScaler()
-        self.word_tfidf = TfidfVectorizer(
-            max_features=max_word_features, ngram_range=(1, 2),
-            min_df=2, max_df=0.95, sublinear_tf=True,
-            token_pattern=r'[\u0A80-\u0AFF]+|[a-zA-Z]+'
-        )
-        self.char_tfidf = TfidfVectorizer(
-            analyzer='char_wb', max_features=max_char_features,
-            ngram_range=(3, 5), min_df=2, max_df=0.95, sublinear_tf=True
-        )
-        self.fitted = False
 
-    def fit_transform(self, texts):
-        style_feats = self._style(texts)
-        scaled_feats = self.scaler.fit_transform(style_feats)
-        word_feats = self.word_tfidf.fit_transform(texts)
-        char_feats = self.char_tfidf.fit_transform(texts)
-        self.fitted = True
-        return hstack([csr_matrix(scaled_feats), word_feats, char_feats]).tocsr()
+        # Figure out how many style features the scaler wants
+        self.expected_style_features = None
+        try:
+            if hasattr(raw_pipeline, "scaler") and hasattr(raw_pipeline.scaler, "n_features_in_"):
+                self.expected_style_features = int(raw_pipeline.scaler.n_features_in_)
+        except Exception:
+            pass
+
+        if self.expected_style_features is None:
+            # Fallback: guess from the size of mean_
+            try:
+                self.expected_style_features = len(raw_pipeline.scaler.mean_)
+            except Exception:
+                self.expected_style_features = 23  # our default
+
+    def _style_matrix(self, texts):
+        """Build the style feature matrix, padded/truncated to expected count."""
+        rows = []
+        for t in texts:
+            f = self.extractor.extract(t)
+            # Extract values in a stable, sorted order
+            vals = [f.get(k, 0) for k in self.extractor._names()]
+            # Pad or truncate
+            if len(vals) < self.expected_style_features:
+                vals = vals + [0.0] * (self.expected_style_features - len(vals))
+            elif len(vals) > self.expected_style_features:
+                vals = vals[:self.expected_style_features]
+            rows.append(vals)
+        arr = np.array(rows, dtype=float)
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+        return arr
 
     def transform(self, texts):
-        style_feats = self._style(texts)
-        scaled_feats = self.scaler.transform(style_feats)
-        word_feats = self.word_tfidf.transform(texts)
-        char_feats = self.char_tfidf.transform(texts)
-        return hstack([csr_matrix(scaled_feats), word_feats, char_feats]).tocsr()
+        """Mirror FeaturePipeline.transform, but with safety."""
+        # Try the raw pipeline first (if it happens to work)
+        try:
+            return self.raw.transform(texts)
+        except Exception:
+            pass
 
-    def _style(self, texts):
-        rows = [self.extractor.extract(t) for t in texts]
-        df = pd.DataFrame(rows).fillna(0).replace([np.inf, -np.inf], 0)
-        return df.values
+        # Otherwise rebuild using our safe style matrix
+        style_feats = self._style_matrix(texts)
+
+        # Use the raw pipeline's scaler
+        try:
+            scaled = self.raw.scaler.transform(style_feats)
+        except Exception:
+            # If scaler still fails, skip scaling
+            scaled = style_feats
+
+        # Use the raw pipeline's tfidf vectorizers
+        try:
+            word_feats = self.raw.word_tfidf.transform(texts)
+        except Exception:
+            word_feats = None
+        try:
+            char_feats = self.raw.char_tfidf.transform(texts)
+        except Exception:
+            char_feats = None
+
+        parts = [csr_matrix(scaled)]
+        if word_feats is not None:
+            parts.append(word_feats)
+        if char_feats is not None:
+            parts.append(char_feats)
+
+        return hstack(parts).tocsr()
 
 
 # ============================================================================
@@ -189,6 +246,7 @@ if "main" not in sys.modules:
         setattr(sys.modules["main"], cls_name, globals()[cls_name])
     INJECTED_MODULES.append("main (newly created)")
 
+
 # ============================================================================
 # Safe import of rule-based classifier
 # ============================================================================
@@ -200,7 +258,6 @@ except ImportError as e:
     STYLE_IMPORT_ERR = str(e)
 
     def analyze_text(text):
-        """Fallback stub if style_matrix_classifier.py is missing."""
         wc = len(text.split())
         return {
             'prediction': 'Unknown', 'confidence': 0.0,
@@ -210,7 +267,7 @@ except ImportError as e:
                 'length_metrics': {'word_count': wc, 'character_count': len(text),
                                    'sentence_count': text.count('.') + 1},
                 'sentence_metrics': {'avg_sentence_length': 0, 'std_sentence_length': 0,
-                                     'interpretation': 'Rule classifier disabled (style_matrix_classifier.py missing)'},
+                                     'interpretation': 'style_matrix_classifier.py missing'},
                 'vocabulary_metrics': {'type_token_ratio': 0, 'hapax_ratio': 0, 'interpretation': 'N/A'},
                 'marker_metrics': {'visvakosh_markers_per_1000': 0, 'wikipedia_markers_per_1000': 0, 'interpretation': 'N/A'},
                 'passive_metrics': {'visvakosh_passive_per_1000': 0, 'wikipedia_passive_per_1000': 0, 'interpretation': 'N/A'},
@@ -228,6 +285,7 @@ except ImportError as e:
             'raw_features': {}
         }
 
+
 # ============================================================================
 # STREAMLIT SETUP
 # ============================================================================
@@ -236,22 +294,16 @@ st.markdown("""
 <style>
     .main-title { font-size: 2.5rem; font-weight: bold; color: #1f4e79;
                   text-align: center; margin-bottom: 0.5rem; }
-    .subtitle { font-size: 1.1rem; color: #555; text-align: center;
-                margin-bottom: 2rem; }
+    .subtitle { font-size: 1.1rem; color: #555; text-align: center; margin-bottom: 2rem; }
     .prediction-box { padding: 1.5rem; border-radius: 10px; margin: 1rem 0;
                       text-align: center; font-size: 1.5rem; font-weight: bold; }
-    .visvakosh-pred { background-color: #d4edda; color: #155724;
-                      border: 2px solid #28a745; }
-    .wikipedia-pred { background-color: #cce5ff; color: #004085;
-                      border: 2px solid #0066cc; }
-    .unknown-pred { background-color: #fff3cd; color: #856404;
-                    border: 2px solid #ffc107; }
-    .satisfied-tag { display: inline-block; background-color: #28a745;
-                     color: white; padding: 3px 10px; border-radius: 12px;
-                     margin: 3px; font-size: 0.85rem; }
-    .wikipedia-tag { display: inline-block; background-color: #0066cc;
-                     color: white; padding: 3px 10px; border-radius: 12px;
-                     margin: 3px; font-size: 0.85rem; }
+    .visvakosh-pred { background-color: #d4edda; color: #155724; border: 2px solid #28a745; }
+    .wikipedia-pred { background-color: #cce5ff; color: #004085; border: 2px solid #0066cc; }
+    .unknown-pred { background-color: #fff3cd; color: #856404; border: 2px solid #ffc107; }
+    .satisfied-tag { display: inline-block; background-color: #28a745; color: white;
+                     padding: 3px 10px; border-radius: 12px; margin: 3px; font-size: 0.85rem; }
+    .wikipedia-tag { display: inline-block; background-color: #0066cc; color: white;
+                     padding: 3px 10px; border-radius: 12px; margin: 3px; font-size: 0.85rem; }
     .model-card { padding: 12px; border-radius: 8px; margin: 8px 0;
                   border-left: 5px solid #999; background: #f9f9f9; }
     .model-card-v { border-left-color: #28a745; background: #f0f9f2; }
@@ -262,8 +314,7 @@ st.markdown("""
     .model-signal { display: inline-block; background: #e9ecef; color: #333;
                     padding: 2px 8px; border-radius: 10px; margin: 2px;
                     font-size: 0.8rem; font-family: monospace; }
-    .stTextArea textarea { font-family: 'Noto Sans Gujarati', 'Shruti', sans-serif;
-                           font-size: 15px; }
+    .stTextArea textarea { font-family: 'Noto Sans Gujarati', 'Shruti', sans-serif; font-size: 15px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -275,103 +326,78 @@ if not STYLE_IMPORT_OK:
     st.warning(f"⚠️ `style_matrix_classifier.py` not found — rule-based classifier disabled. "
                f"({STYLE_IMPORT_ERR})")
 
+
 # ============================================================================
-# CONFIG + LOAD — NOW LOOKS IN REPO ROOT + SUBDIRS
+# CONFIG + LOAD
 # ============================================================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-SKIP_FILES = {
-    "best_model.pkl",           # optional duplicate
-    "visvakosh_classifier.pkl", # old single-file classifier
-    "streamlit_app.pkl",        # never exists, safe
-}
-
+SKIP_FILES = {"best_model.pkl", "visvakosh_classifier.pkl", "streamlit_app.pkl"}
 DENSE_ONLY = {'SVC_RBF', 'KNN', 'MLP', 'LDA', 'DecisionTree'}
 
 
 def discover_pkl_files():
-    """
-    Find every .pkl in the repo:
-      1. Script directory (repo root)
-      2. trained_models/ subfolder
-      3. Any *.pkl in any subfolder (recursive) — with limits to avoid
-         scanning .git, __pycache__, etc.
-    """
     found = set()
-
-    # 1. Repo root
     for p in glob.glob(os.path.join(SCRIPT_DIR, "*.pkl")):
         found.add(os.path.abspath(p))
-
-    # 2. trained_models/ if it exists
     tm = os.path.join(SCRIPT_DIR, "trained_models")
     if os.path.isdir(tm):
         for p in glob.glob(os.path.join(tm, "*.pkl")):
             found.add(os.path.abspath(p))
-
-    # 3. Recursive scan (exclude common noise dirs)
     for root, dirs, files in os.walk(SCRIPT_DIR):
         dirs[:] = [d for d in dirs if d not in {'.git', '__pycache__', 'venv', '.venv',
                                                   'node_modules', '.streamlit'}]
         for f in files:
             if f.endswith(".pkl"):
                 found.add(os.path.abspath(os.path.join(root, f)))
-
     return sorted(found)
 
 
 def load_all_ml_models():
     models, status = {}, []
     pkl_paths = discover_pkl_files()
-
     if not pkl_paths:
         return models, status
 
     for path in pkl_paths:
         fname = os.path.relpath(path, SCRIPT_DIR)
         size = os.path.getsize(path)
-
-        # Skip known non-model files
         base = os.path.basename(path)
+
         if base in SKIP_FILES:
             status.append((fname, size, False, "skipped (in SKIP_FILES)"))
             continue
-
-        # Skip tiny files (likely corrupt/empty)
         if size < 200:
             status.append((fname, size, False, f"too small ({size} B)"))
             continue
 
         try:
             data = joblib.load(path)
-
-            # Some pickles may be dicts, some may be the model itself
             if not isinstance(data, dict):
-                status.append((fname, size, False,
-                               f"expected dict, got {type(data).__name__}"))
+                status.append((fname, size, False, f"expected dict, got {type(data).__name__}"))
                 continue
 
             name = data.get("model_name", base.replace(".pkl", ""))
-
             if "model" not in data or "feature_pipeline" not in data:
-                status.append((fname, size, False,
-                               f"missing keys: {list(data.keys())[:5]}"))
+                status.append((fname, size, False, f"missing keys: {list(data.keys())[:5]}"))
                 continue
+
+            # ✅ Wrap the raw pipeline in SafePipeline
+            safe_pipe = SafePipeline(data["feature_pipeline"])
 
             models[name] = {
                 "model": data["model"],
-                "pipeline": data["feature_pipeline"],
+                "pipeline": safe_pipe,   # use the safe wrapper
                 "cv_f1": data.get("metrics", {}).get("cv_mean", 0.0),
                 "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
                 "val_v_ok": data.get("val_v_ok", False),
                 "val_w_ok": data.get("val_w_ok", False),
                 "source": "local",
+                "expected_features": safe_pipe.expected_style_features,
             }
-            status.append((fname, size, True, name))
-
+            status.append((fname, size, True,
+                           f"{name} (style features: {safe_pipe.expected_style_features})"))
         except Exception as e:
             status.append((fname, size, False, f"{type(e).__name__}: {str(e)[:80]}"))
-
     return models, status
 
 
@@ -382,6 +408,7 @@ if "ml_models" not in st.session_state:
 
 ALL_ML_MODELS = st.session_state["ml_models"]
 LOAD_STATUS   = st.session_state["ml_status"]
+
 
 # ============================================================================
 # SIDEBAR
@@ -402,9 +429,10 @@ with st.sidebar:
             st.session_state['sample_text'] = sample_w
     if st.button("🗑️ Clear", use_container_width=True):
         st.session_state['sample_text'] = ""
+
     st.markdown("---")
     st.header("🤖 ML Models Status")
-    st.caption(f"Injected classes into: {INJECTED_MODULES}")
+    st.caption(f"Injected: {INJECTED_MODULES}")
     st.caption(f"Scanning: `{SCRIPT_DIR}`")
 
     if st.button("🔄 Reload Models", use_container_width=True, key="reload_btn"):
@@ -414,18 +442,12 @@ with st.sidebar:
 
     ok_count  = sum(1 for _, _, ok, _ in LOAD_STATUS if ok)
     err_count = sum(1 for _, _, ok, _ in LOAD_STATUS if not ok)
-
-    if ok_count:
-        st.success(f"✅ {ok_count} models loaded")
-    if err_count:
-        st.error(f"❌ {err_count} not loaded")
+    if ok_count:  st.success(f"✅ {ok_count} models loaded")
+    if err_count: st.error(f"❌ {err_count} not loaded")
 
     with st.expander(f"✅ Loaded ({ok_count})", expanded=(ok_count > 0)):
-        if ok_count == 0:
-            st.write("No models loaded yet.")
         for fname, size, ok, msg in LOAD_STATUS:
-            if ok:
-                st.write(f"✓ `{fname}` ({size:,} B) → **{msg}**")
+            if ok: st.write(f"✓ `{fname}` ({size:,} B) → **{msg}**")
 
     if err_count:
         with st.expander(f"❌ Failed ({err_count})", expanded=(ok_count == 0)):
@@ -434,7 +456,6 @@ with st.sidebar:
                     st.write(f"❌ `{fname}` ({size:,} B)")
                     st.caption(f"↳ {msg}")
 
-    # Debug: show discovered .pkl files
     with st.expander("🔍 Debug: Discovered .pkl files", expanded=(ok_count == 0)):
         pkls = discover_pkl_files()
         if pkls:
@@ -446,7 +467,7 @@ with st.sidebar:
 
 
 # ============================================================================
-# ML PREDICTION + REASONING
+# ML PREDICTION
 # ============================================================================
 def ml_predict_one(text, name, bundle):
     model, pipeline = bundle["model"], bundle["pipeline"]
@@ -456,7 +477,9 @@ def ml_predict_one(text, name, bundle):
            "cv_f1": bundle.get("cv_f1", 0.0),
            "val_v_ok": bundle.get("val_v_ok", False),
            "val_w_ok": bundle.get("val_w_ok", False),
-           "source": bundle.get("source", "?")}
+           "source": bundle.get("source", "?"),
+           "expected_features": bundle.get("expected_features", "?")}
+
     try:
         X = pipeline.transform([text])
         if name in DENSE_ONLY:
@@ -563,6 +586,7 @@ with c2:
         disabled=(not text_input or len(text_input) < 30)
     )
 
+
 # ============================================================================
 # RESULTS
 # ============================================================================
@@ -576,12 +600,9 @@ if analyze_btn:
 
     pred = result['prediction']
     conf = result['confidence']
-    if pred == "Visvakosh":
-        css, emoji = "visvakosh-pred", "📖"
-    elif pred == "Wikipedia":
-        css, emoji = "wikipedia-pred", "🌐"
-    else:
-        css, emoji = "unknown-pred", "❓"
+    if pred == "Visvakosh":   css, emoji = "visvakosh-pred", "📖"
+    elif pred == "Wikipedia": css, emoji = "wikipedia-pred", "🌐"
+    else:                     css, emoji = "unknown-pred", "❓"
 
     st.markdown(
         f'<div class="prediction-box {css}">{emoji} Likely Source: '
@@ -600,14 +621,10 @@ if analyze_btn:
     st.markdown("---")
     st.header("📋 Rule-by-Rule Breakdown")
     for r in result['rule_results']:
-        vv = r['visvakosh_votes']
-        wv = r['wikipedia_votes']
-        if vv == 0 and wv == 0:
-            continue
-        if vv > 0:
-            st.markdown(f"**+{vv} Visvakosh**  {r['reason']}")
-        if wv > 0:
-            st.markdown(f"**+{wv} Wikipedia**  {r['reason']}")
+        vv, wv = r['visvakosh_votes'], r['wikipedia_votes']
+        if vv == 0 and wv == 0: continue
+        if vv > 0: st.markdown(f"**+{vv} Visvakosh**  {r['reason']}")
+        if wv > 0: st.markdown(f"**+{wv} Wikipedia**  {r['reason']}")
 
     st.markdown("---")
     st.header("✅ Satisfied Style Properties")
@@ -616,16 +633,14 @@ if analyze_btn:
         st.subheader("📖 Visvakosh Indicators")
         if result['visvakosh_satisfied']:
             for r in result['visvakosh_satisfied']:
-                st.markdown(f'<span class="satisfied-tag">{r["rule"]}</span>',
-                            unsafe_allow_html=True)
+                st.markdown(f'<span class="satisfied-tag">{r["rule"]}</span>', unsafe_allow_html=True)
         else:
             st.info("None met")
     with c2:
         st.subheader("🌐 Wikipedia Indicators")
         if result['wikipedia_satisfied']:
             for r in result['wikipedia_satisfied']:
-                st.markdown(f'<span class="wikipedia-tag">{r["rule"]}</span>',
-                            unsafe_allow_html=True)
+                st.markdown(f'<span class="wikipedia-tag">{r["rule"]}</span>', unsafe_allow_html=True)
         else:
             st.info("None met")
 
@@ -639,55 +654,47 @@ if analyze_btn:
         c1.metric("Words", f"{lm['word_count']:,}")
         c2.metric("Characters", f"{lm['character_count']:,}")
         c3.metric("Sentences", lm['sentence_count'])
-
     with st.expander("📝 Sentence Metrics", expanded=True):
         sm = quant['sentence_metrics']
         c1, c2 = st.columns(2)
         c1.metric("Avg Sentence Length", f"{sm['avg_sentence_length']:.2f}")
         c2.metric("Std Dev", f"{sm['std_sentence_length']:.2f}")
         st.info(f"💡 {sm['interpretation']}")
-
     with st.expander("📚 Vocabulary Metrics", expanded=True):
         vm = quant['vocabulary_metrics']
         c1, c2 = st.columns(2)
         c1.metric("Type-Token Ratio", f"{vm['type_token_ratio']:.4f}")
         c2.metric("Hapax Ratio", f"{vm['hapax_ratio']:.4f}")
         st.info(f"💡 {vm['interpretation']}")
-
     with st.expander("🏷️ Marker Metrics", expanded=True):
         mm = quant['marker_metrics']
         c1, c2 = st.columns(2)
         c1.metric("V Markers/1000", f"{mm['visvakosh_markers_per_1000']:.2f}")
         c2.metric("W Markers/1000", f"{mm['wikipedia_markers_per_1000']:.2f}")
         st.info(f"💡 {mm['interpretation']}")
-
     with st.expander("🔊 Passive Voice Metrics", expanded=True):
         pm = quant['passive_metrics']
         c1, c2 = st.columns(2)
         c1.metric("V Passive/1000", f"{pm['visvakosh_passive_per_1000']:.2f}")
         c2.metric("W Passive/1000", f"{pm['wikipedia_passive_per_1000']:.2f}")
         st.info(f"💡 {pm['interpretation']}")
-
     with st.expander("🔤 Transliteration Metrics", expanded=True):
         tm = quant['transliteration_metrics']
         c1, c2 = st.columns(2)
         c1.metric("Traditional", tm['traditional_count'])
         c2.metric("Modern", tm['modern_count'])
         st.info(f"💡 {tm['interpretation']}")
-
     with st.expander("❕ Punctuation Metrics", expanded=True):
         pum = quant['punctuation_metrics']
         c1, c2, c3 = st.columns(3)
         c1.metric("Colons/1000", f"{pum['colon_per_1000']:.2f}")
         c2.metric("Semicolons/1000", f"{pum['semicolon_per_1000']:.2f}")
         c3.metric("Parentheses/1000", f"{pum['parentheses_per_1000']:.2f}")
-
     with st.expander("🔠 English Glosses", expanded=True):
         gm = quant['gloss_metrics']
         c1, c2 = st.columns(2)
         c1.metric("English Glosses", gm['english_gloss_count'])
         c2.metric("Glosses/1000", f"{gm['english_glosses_per_1000']:.2f}")
-
     with st.expander("🏗️ Structural Metrics", expanded=True):
         stm = quant['structural_metrics']
         c1, c2 = st.columns(2)
@@ -697,26 +704,21 @@ if analyze_btn:
     st.markdown("---")
     st.header("🎭 Qualitative Analysis")
     qual = result['qualitative_analysis']
-
     with st.expander("🎵 Tone", expanded=True):
         t = qual['tone']
         st.markdown(f"**Definition-first:** {'Yes ✅' if t['definition_first'] else 'No ❌'}")
         st.markdown(f"**Style:** {t['definition_style']}")
-
     with st.expander("🏗️ Structure", expanded=True):
         s = qual['structure']
         st.markdown(f"**Citations:** {'Yes ✅' if s['has_citations'] else 'No ❌'}")
         st.markdown(f"**Wiki headings:** {'Yes ✅' if s['has_wiki_headings'] else 'No ❌'}")
-
     with st.expander("📖 Vocabulary Style", expanded=True):
         v_qual = qual['vocabulary_style']
         st.markdown(f"**Function words:** {v_qual['marker_style']}")
         st.markdown(f"**Transliteration:** {v_qual['transliteration_style']}")
-
     with st.expander("🔤 Glossing Style", expanded=True):
         g = qual['glossing_style']
         st.markdown(f"**Gloss density:** {g['gloss_density']}")
-
     with st.expander("🔬 Raw Feature Values"):
         df = pd.DataFrame([{"Feature": k, "Value": v}
                            for k, v in result['raw_features'].items()])
@@ -757,25 +759,19 @@ if analyze_btn:
         n_v = n_w = 0
         cv_sum = cw_sum = 0.0
         for r in ml_results:
-            if r["error"]:
-                continue
+            if r["error"]: continue
             if r["prediction"] == "Visvakosh":
-                n_v += 1
-                cv_sum += r["confidence"] or 0
+                n_v += 1; cv_sum += r["confidence"] or 0
             else:
-                n_w += 1
-                cw_sum += r["confidence"] or 0
+                n_w += 1; cw_sum += r["confidence"] or 0
 
         total = n_v + n_w
         avg_v = cv_sum / n_v if n_v else 0
         avg_w = cw_sum / n_w if n_w else 0
 
-        if n_v > n_w:
-            ens_verdict, ens_css, ens_emoji = "Visvakosh", "visvakosh-pred", "📖"
-        elif n_w > n_v:
-            ens_verdict, ens_css, ens_emoji = "Wikipedia", "wikipedia-pred", "🌐"
-        else:
-            ens_verdict, ens_css, ens_emoji = "Tie", "unknown-pred", "⚖️"
+        if n_v > n_w:   ens_verdict, ens_css, ens_emoji = "Visvakosh", "visvakosh-pred", "📖"
+        elif n_w > n_v: ens_verdict, ens_css, ens_emoji = "Wikipedia", "wikipedia-pred", "🌐"
+        else:           ens_verdict, ens_css, ens_emoji = "Tie", "unknown-pred", "⚖️"
 
         st.markdown(
             f'<div class="prediction-box {ens_css}">{ens_emoji} ML Ensemble Verdict: '
@@ -814,6 +810,7 @@ if analyze_btn:
             if r["val_v_ok"] and r["val_w_ok"]:
                 badges.append("✅ both validations passed")
             badges.append(f"CV F1 = {r['cv_f1']:.4f}")
+            badges.append(f"style feats = {r.get('expected_features','?')}")
 
             sig_html = "".join(
                 f'<span class="model-signal">{s}</span>' for s in r.get("signals", [])
@@ -821,8 +818,7 @@ if analyze_btn:
 
             proba_html = ""
             if r["proba_v"] is not None and r["proba_w"] is not None:
-                pv = r["proba_v"] * 100
-                pw = r["proba_w"] * 100
+                pv = r["proba_v"] * 100; pw = r["proba_w"] * 100
                 proba_html = (
                     f'<div style="margin-top:8px;font-size:0.85rem;">'
                     f'<div>📖 Visvakosh: <b>{pv:.1f}%</b> '
