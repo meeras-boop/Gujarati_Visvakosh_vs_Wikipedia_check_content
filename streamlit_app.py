@@ -1,6 +1,7 @@
 # ============================================================================
-# streamlit_app.py — SAFE VERSION — auto-pads feature count to match scaler
-# Works with your EXISTING .pkl files. No retraining needed.
+# streamlit_app.py — FULL CORRECTED VERSION
+# Auto-detects expected feature count; extracts 41 style features
+# Works with existing .pkl files. No retraining needed.
 # ============================================================================
 
 import warnings
@@ -28,7 +29,7 @@ from scipy.sparse import hstack, csr_matrix
 
 
 # ============================================================================
-# FEATURE EXTRACTION (same as before, produces 23 features)
+# TOKENIZER
 # ============================================================================
 class GujaratiTokenizer:
     GUJ = re.compile(r'[\u0A80-\u0AFF]+')
@@ -49,6 +50,9 @@ class GujaratiTokenizer:
         return [s.strip() for s in re.split(r'(?<=[.])\s+', t) if len(s.strip()) > 2]
 
 
+# ============================================================================
+# STYLE MATRIX EXTRACTOR — produces 41 features
+# ============================================================================
 class StyleMatrixExtractor:
     def __init__(self):
         self.tk = GujaratiTokenizer()
@@ -66,6 +70,8 @@ class StyleMatrixExtractor:
             'બનાવવામાં આવે છે', 'માનવામાં આવે છે', 'હતું', 'હતા', 'હતી',
             'એપ્રિલ', 'મે', 'જૂન', 'ઓગસ્ટ', 'નવેમ્બર', 'ડિસેમ્બર', 'તારીખ'
         ]
+        self.traditional_translit = ['ૉ', 'ૅ', 'ઑ', 'ઍ']
+        self.modern_translit = ['ો', 'ે', 'ૈ']
 
     def extract(self, text: str) -> dict:
         if not text or not isinstance(text, str) or len(text) < 20:
@@ -75,136 +81,172 @@ class StyleMatrixExtractor:
         if len(words) < 5:
             return self._empty()
 
-        wc = len(words); cc = len(text); sc = max(len(sentences), 1)
+        wc = len(words)
+        cc = len(text)
+        sc = max(len(sentences), 1)
 
+        # ---------- 6 base features ----------
         feats = {
-            'word_count': wc, 'log_word_count': np.log1p(wc),
-            'char_count': cc, 'log_char_count': np.log1p(cc),
+            'word_count': wc,
+            'log_word_count': float(np.log1p(wc)),
+            'char_count': cc,
+            'log_char_count': float(np.log1p(cc)),
             'sentence_count': sc,
-            'avg_word_length': float(np.mean([len(w) for w in words])) if words else 0,
+            'avg_word_length': float(np.mean([len(w) for w in words])) if words else 0.0,
         }
 
+        # ---------- 4 sentence features ----------
         sl = [len(self.tk.words(s)) for s in sentences]
         sl = [l for l in sl if l > 0]
-        feats['avg_sentence_length'] = float(np.mean(sl)) if sl else 0
-        feats['std_sentence_length'] = float(np.std(sl)) if len(sl) > 1 else 0
-        feats['max_sentence_length'] = float(max(sl)) if sl else 0
+        feats['avg_sentence_length'] = float(np.mean(sl)) if sl else 0.0
+        feats['std_sentence_length'] = float(np.std(sl)) if len(sl) > 1 else 0.0
+        feats['max_sentence_length'] = float(max(sl)) if sl else 0.0
+        feats['min_sentence_length'] = float(min(sl)) if sl else 0.0
 
+        # ---------- 3 lexical features ----------
         uniq = set(words)
-        feats['type_token_ratio'] = len(uniq) / wc if wc > 0 else 0
+        feats['type_token_ratio'] = len(uniq) / wc if wc > 0 else 0.0
         feats['hapax_ratio'] = sum(1 for c in Counter(words).values() if c == 1) / max(len(uniq), 1)
 
+        # ---------- 5 marker features ----------
         v_c = sum(text.count(m) for m in self.v_markers)
         w_c = sum(text.count(m) for m in self.w_markers)
-        feats['v_markers_per_1000'] = (v_c / wc) * 1000 if wc > 0 else 0
-        feats['w_markers_per_1000'] = (w_c / wc) * 1000 if wc > 0 else 0
-        feats['marker_diff_per_1000'] = ((v_c - w_c) / wc) * 1000 if wc > 0 else 0
+        feats['v_markers_per_1000'] = (v_c / wc) * 1000 if wc > 0 else 0.0
+        feats['w_markers_per_1000'] = (w_c / wc) * 1000 if wc > 0 else 0.0
+        feats['marker_diff_per_1000'] = ((v_c - w_c) / wc) * 1000 if wc > 0 else 0.0
+        feats['marker_ratio'] = v_c / (v_c + w_c) if (v_c + w_c) > 0 else 0.5
 
-        passive_markers = ['થાય છે', 'થયું', 'થયા', 'થઈ', 'આવે છે', 'આવ્યું', 'બને છે', 'કરાય છે']
+        # ---------- 1 passive feature ----------
+        passive_markers = ['થાય છે', 'થયું', 'થયા', 'થઈ', 'આવે છે', 'આવ્યું',
+                           'બને છે', 'કરાય છે']
         p_c = sum(text.count(m) for m in passive_markers)
-        feats['passive_per_1000'] = (p_c / wc) * 1000 if wc > 0 else 0
+        feats['passive_per_1000'] = (p_c / wc) * 1000 if wc > 0 else 0.0
 
+        # ---------- 3 script features ----------
         eng_chars = len(re.findall(r'[a-zA-Z]', text))
         guj_chars = len(re.findall(r'[\u0A80-\u0AFF]', text))
-        feats['english_char_ratio'] = eng_chars / cc if cc > 0 else 0
+        feats['english_char_ratio'] = eng_chars / cc if cc > 0 else 0.0
+        feats['gujarati_char_ratio'] = guj_chars / cc if cc > 0 else 0.0
         feats['script_ratio'] = guj_chars / (guj_chars + eng_chars + 1)
 
-        feats['colon_per_1000'] = (text.count(':') / wc) * 1000 if wc > 0 else 0
-        feats['hyphen_per_1000'] = (text.count('-') / wc) * 1000 if wc > 0 else 0
+        # ---------- 6 punctuation features ----------
+        feats['colon_per_1000'] = (text.count(':') / wc) * 1000 if wc > 0 else 0.0
+        feats['comma_per_1000'] = (text.count(',') / wc) * 1000 if wc > 0 else 0.0
+        feats['paren_per_1000'] = ((text.count('(') + text.count(')')) / wc) * 1000 if wc > 0 else 0.0
+        feats['space_comma_per_1000'] = (len(re.findall(r'\s,', text)) / wc) * 1000 if wc > 0 else 0.0
+        feats['hyphen_per_1000'] = (text.count('-') / wc) * 1000 if wc > 0 else 0.0
+        feats['danda_per_1000'] = (text.count('।') / wc) * 1000 if wc > 0 else 0.0
 
+        # ---------- 4 structural features ----------
         feats['citation_count'] = len(re.findall(r'\[\d+\]', text))
         feats['wiki_heading_count'] = len(re.findall(r'==+.*?==+', text))
-
         first_200 = text[:200]
         feats['colon_in_first_200'] = 1.0 if ':' in first_200 else 0.0
         feats['def_in_first_200'] = 1.0 if any(m in first_200 for m in ['એટલે', 'કહેવાય', 'ગણાય']) else 0.0
 
+        # ---------- 10 individual marker counts ----------
+        for m in ['તથા', 'વળી', 'કહેવાય છે', 'એટલે', 'કરાય છે',
+                  'શામેલ', 'દ્વારા', 'સક્ષમ', 'ઉલ્લેખ', 'કરવામાં આવે છે']:
+            feats['cnt_' + m.replace(' ', '_')] = text.count(m)
+
+        # ---------- 3 transliteration features ----------
+        trad = sum(text.count(c) for c in self.traditional_translit)
+        mod = sum(text.count(c) for c in self.modern_translit)
+        feats['translit_traditional_count'] = float(trad)
+        feats['translit_modern_count'] = float(mod)
+        feats['translit_style_ratio'] = trad / (trad + mod) if (trad + mod) > 0 else 0.5
+
         return feats
 
     def _empty(self) -> dict:
-        return {k: 0 for k in self._names()}
+        return {k: 0.0 for k in self._names()}
 
     def _names(self):
-        # Must match extract() keys, in order
-        return [
+        """Feature names in EXACT order extract() produces them."""
+        names = [
             'word_count', 'log_word_count', 'char_count', 'log_char_count',
-            'sentence_count', 'avg_word_length', 'avg_sentence_length',
-            'std_sentence_length', 'max_sentence_length',
+            'sentence_count', 'avg_word_length',
+            'avg_sentence_length', 'std_sentence_length',
+            'max_sentence_length', 'min_sentence_length',
             'type_token_ratio', 'hapax_ratio',
             'v_markers_per_1000', 'w_markers_per_1000', 'marker_diff_per_1000',
-            'passive_per_1000', 'english_char_ratio', 'script_ratio',
-            'colon_per_1000', 'hyphen_per_1000',
+            'marker_ratio',
+            'passive_per_1000',
+            'english_char_ratio', 'gujarati_char_ratio', 'script_ratio',
+            'colon_per_1000', 'comma_per_1000', 'paren_per_1000',
+            'space_comma_per_1000', 'hyphen_per_1000', 'danda_per_1000',
             'citation_count', 'wiki_heading_count',
             'colon_in_first_200', 'def_in_first_200',
         ]
+        for m in ['તથા', 'વળી', 'કહેવાય છે', 'એટલે', 'કરાય છે',
+                  'શામેલ', 'દ્વારા', 'સક્ષમ', 'ઉલ્લેખ', 'કરવામાં આવે છે']:
+            names.append('cnt_' + m.replace(' ', '_'))
+        names.extend([
+            'translit_traditional_count',
+            'translit_modern_count',
+            'translit_style_ratio',
+        ])
+        return names
 
 
 # ============================================================================
-# SAFE PIPELINE — wraps whatever pipeline is inside the pickle
-# and pads/truncates features so the scaler's input always matches.
+# SAFE PIPELINE — pads/truncates style features to match scaler
 # ============================================================================
 class SafePipeline:
-    """
-    Wraps a pickled pipeline. If the pickled pipeline's internal extractor
-    produces a different number of features than the scaler was fit on,
-    we pad/truncate to make it work.
-    """
-
     def __init__(self, raw_pipeline):
         self.raw = raw_pipeline
         self.extractor = StyleMatrixExtractor()
 
-        # Figure out how many style features the scaler wants
+        # Detect how many style features the scaler wants
         self.expected_style_features = None
         try:
             if hasattr(raw_pipeline, "scaler") and hasattr(raw_pipeline.scaler, "n_features_in_"):
                 self.expected_style_features = int(raw_pipeline.scaler.n_features_in_)
         except Exception:
             pass
-
         if self.expected_style_features is None:
-            # Fallback: guess from the size of mean_
             try:
                 self.expected_style_features = len(raw_pipeline.scaler.mean_)
             except Exception:
-                self.expected_style_features = 23  # our default
+                self.expected_style_features = 41
 
     def _style_matrix(self, texts):
-        """Build the style feature matrix, padded/truncated to expected count."""
         rows = []
+        names = self.extractor._names()
+        n_expect = self.expected_style_features
+
         for t in texts:
             f = self.extractor.extract(t)
-            # Extract values in a stable, sorted order
-            vals = [f.get(k, 0) for k in self.extractor._names()]
-            # Pad or truncate
-            if len(vals) < self.expected_style_features:
-                vals = vals + [0.0] * (self.expected_style_features - len(vals))
-            elif len(vals) > self.expected_style_features:
-                vals = vals[:self.expected_style_features]
+            vals = [float(f.get(k, 0.0)) for k in names]
+            # Pad with zeros if fewer than expected
+            if len(vals) < n_expect:
+                vals = vals + [0.0] * (n_expect - len(vals))
+            # Truncate if more than expected
+            elif len(vals) > n_expect:
+                vals = vals[:n_expect]
             rows.append(vals)
+
         arr = np.array(rows, dtype=float)
         arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
         return arr
 
     def transform(self, texts):
-        """Mirror FeaturePipeline.transform, but with safety."""
-        # Try the raw pipeline first (if it happens to work)
+        # Try the raw pipeline first (works if features happen to match)
         try:
             return self.raw.transform(texts)
         except Exception:
             pass
 
-        # Otherwise rebuild using our safe style matrix
+        # Rebuild with safe style matrix
         style_feats = self._style_matrix(texts)
 
-        # Use the raw pipeline's scaler
+        # Apply the raw pipeline's scaler
         try:
             scaled = self.raw.scaler.transform(style_feats)
         except Exception:
-            # If scaler still fails, skip scaling
             scaled = style_feats
 
-        # Use the raw pipeline's tfidf vectorizers
+        # Apply the raw pipeline's vectorizers
         try:
             word_feats = self.raw.word_tfidf.transform(texts)
         except Exception:
@@ -381,12 +423,11 @@ def load_all_ml_models():
                 status.append((fname, size, False, f"missing keys: {list(data.keys())[:5]}"))
                 continue
 
-            # ✅ Wrap the raw pipeline in SafePipeline
             safe_pipe = SafePipeline(data["feature_pipeline"])
 
             models[name] = {
                 "model": data["model"],
-                "pipeline": safe_pipe,   # use the safe wrapper
+                "pipeline": safe_pipe,
                 "cv_f1": data.get("metrics", {}).get("cv_mean", 0.0),
                 "test_acc": data.get("metrics", {}).get("accuracy", 0.0),
                 "val_v_ok": data.get("val_v_ok", False),
