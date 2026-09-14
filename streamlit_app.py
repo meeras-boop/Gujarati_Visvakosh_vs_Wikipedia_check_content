@@ -1,6 +1,8 @@
 # ============================================================================
-# streamlit_app.py — FULL CORRECTED VERSION with numbered calculation traces
-#   + CATEGORY DETECTION using category-specific keyword sets
+# streamlit_app.py — FULL CORRECTED VERSION
+#   * numbered calculation traces
+#   * category detection using category-specific keyword sets
+#   * FIXED ML label orientation (Visvakosh <-> Wikipedia swap)
 # ============================================================================
 
 import warnings
@@ -29,7 +31,69 @@ from scipy.sparse import hstack, csr_matrix
 
 
 # ============================================================================
-# CATEGORY-SPECIFIC KEYWORD SETS  (from Category-specific keyword sets.txt)
+# ============  GLOBAL LABEL ORIENTATION SWITCH  =============================
+# ============================================================================
+# Training used: all_labels = [0]*len(visvakosh) + [1]*len(wikipedia)
+# i.e. 0 = Visvakosh, 1 = Wikipedia.
+#
+# If your pickled models were saved with the OPPOSITE encoding (or the
+# training's `LabelEncoder` mapped 'Visvakosh' -> 1 and 'Wikipedia' -> 0),
+# the models will output inverted class indices. Setting this to True
+# swaps the interpretation so predictions read correctly.
+#
+# Set ML_SWAP_LABELS = True  if predictions come out inverted.
+# Set ML_SWAP_LABELS = False if predictions come out correct.
+# ============================================================================
+ML_SWAP_LABELS = True
+
+
+def interpret_class_index(idx: int) -> str:
+    """
+    Convert the raw class index returned by the pickled model into a
+    human-readable source name, applying the swap if enabled.
+
+    Raw convention (from training):
+        0 -> Visvakosh
+        1 -> Wikipedia
+    """
+    idx = int(idx)
+    if ML_SWAP_LABELS:
+        # invert
+        return "Visvakosh" if idx == 1 else "Wikipedia"
+    else:
+        return "Wikipedia" if idx == 1 else "Visvakosh"
+
+
+def orient_probabilities(p) -> Tuple[float, float]:
+    """
+    Given the raw probability array [p0, p1] from the model, return
+    (P(Visvakosh), P(Wikipedia)) using the swap flag.
+    """
+    p0 = float(p[0])
+    p1 = float(p[1])
+    if ML_SWAP_LABELS:
+        # p0 was really Wikipedia, p1 was really Visvakosh
+        return p1, p0
+    else:
+        return p0, p1
+
+
+def orient_decision(d: float) -> Tuple[float, float]:
+    """
+    Given a decision_function score d, return (P(Visvakosh), P(Wikipedia))
+    using a logistic squash. Sign convention: positive d -> class 1.
+    """
+    p_class1 = 1.0 / (1.0 + np.exp(-d))
+    p_class0 = 1.0 - p_class1
+    if ML_SWAP_LABELS:
+        # class 1 was really Visvakosh, class 0 was really Wikipedia
+        return p_class1, p_class0
+    else:
+        return p_class0, p_class1
+
+
+# ============================================================================
+# CATEGORY-SPECIFIC KEYWORD SETS
 # ============================================================================
 CATEGORY_KEYWORDS = {
     "Person Biography": {
@@ -161,7 +225,7 @@ CATEGORY_KEYWORDS = {
 
 
 # ============================================================================
-# TOKENIZER  (matches training script exactly)
+# TOKENIZER
 # ============================================================================
 class GujaratiTokenizer:
     GUJARATI_PATTERN = re.compile(r'[\u0A80-\u0AFF]+')
@@ -195,23 +259,9 @@ class GujaratiTokenizer:
 # CATEGORY DETECTOR
 # ============================================================================
 def detect_category(text: str, source: str = None) -> Dict[str, Any]:
-    """
-    Detect which category the text belongs to, using the category keyword sets.
-    `source` can be "Visvakosh" or "Wikipedia" to prioritize that source's
-    keyword list. If None, both lists are used and the source is auto-detected.
-    Returns:
-        {
-            "category": "<best category name or 'General / Unknown'>",
-            "scores": {"<cat>": {"v_hits": N, "w_hits": N, "total": N, "words": [...]}}
-            "best_source": "Visvakosh" | "Wikipedia" | "Mixed",
-            "all_matches": [...],
-        }
-    """
     if not text or not isinstance(text, str):
         return {"category": "General / Unknown", "scores": {},
                 "best_source": "Unknown", "all_matches": []}
-
-    text_lower = text  # Gujarati has no case; keep as-is for English too
 
     scores: Dict[str, Dict[str, Any]] = {}
     all_matches: List[Dict[str, Any]] = []
@@ -220,11 +270,9 @@ def detect_category(text: str, source: str = None) -> Dict[str, Any]:
         v_words = [w for w in kw["visvakosh"] if w and w in text]
         w_words = [w for w in kw["wikipedia"] if w and w in text]
 
-        # Count actual occurrences (not just presence) for a better score
         v_hits = sum(text.count(w) for w in v_words)
         w_hits = sum(text.count(w) for w in w_words)
 
-        # Bonus for the source-specific list
         if source == "Visvakosh":
             score = v_hits * 2 + w_hits
         elif source == "Wikipedia":
@@ -233,12 +281,8 @@ def detect_category(text: str, source: str = None) -> Dict[str, Any]:
             score = v_hits + w_hits
 
         scores[cat] = {
-            "v_hits": v_hits,
-            "w_hits": w_hits,
-            "total": v_hits + w_hits,
-            "score": score,
-            "v_words": v_words,
-            "w_words": w_words,
+            "v_hits": v_hits, "w_hits": w_hits, "total": v_hits + w_hits,
+            "score": score, "v_words": v_words, "w_words": w_words,
         }
 
         for w in v_words:
@@ -262,26 +306,17 @@ def detect_category(text: str, source: str = None) -> Dict[str, Any]:
     else:
         best_source = source or "Mixed"
 
-    return {
-        "category": best_cat,
-        "scores": scores,
-        "best_source": best_source,
-        "all_matches": all_matches,
-        "best_info": best_info,
-    }
+    return {"category": best_cat, "scores": scores,
+            "best_source": best_source, "all_matches": all_matches,
+            "best_info": best_info}
 
 
 # ============================================================================
-# STYLE MATRIX EXTRACTOR — 41 features (matches pickled scaler)
+# STYLE MATRIX EXTRACTOR — 41 features
 # ============================================================================
 class GujaratiStyleMatrixExtractor:
-    """
-    Extracts the exact 41 style features that the pickled `StandardScaler`
-    was fitted on. Feature ORDER matters and MUST match the training script.
-    """
     def __init__(self):
         self.tokenizer = GujaratiTokenizer()
-
         self.v_markers = [
             'તથા', 'વળી', 'આથી', 'ગણાય', 'પ્રચલિત', 'આવાં', 'કેટલાંક',
             'અલબત્ત', 'તદુપરાંત', 'દા.ત.', 'જુઓ', 'એટલે કે', 'કહેવાય છે',
@@ -304,7 +339,6 @@ class GujaratiStyleMatrixExtractor:
         self.definition_markers = ['એટલે', 'કહેવાય', 'ગણાય', 'રૂપે ઓળખાય', 'એટલે કે']
         self.traditional_translit = ['ૉ', 'ૅ', 'ઑ', 'ઍ']
         self.modern_translit = ['ો', 'ે', 'ૈ']
-
         self.english_letters = re.compile(r'[a-zA-Z]')
         self.gujarati_letters = re.compile(r'[\u0A80-\u0AFF]')
 
@@ -331,16 +365,12 @@ class GujaratiStyleMatrixExtractor:
     def extract_style_matrix(self, text: str) -> Dict[str, float]:
         if not text or not isinstance(text, str) or len(text) < 20:
             return self._empty()
-
         words = self.tokenizer.tokenize_words(text)
         sentences = self.tokenizer.tokenize_sentences(text)
         if len(words) < 5:
             return self._empty()
 
-        wc = len(words)
-        cc = len(text)
-        sc = max(len(sentences), 1)
-
+        wc = len(words); cc = len(text); sc = max(len(sentences), 1)
         f: Dict[str, float] = {}
         f['word_count'] = float(wc)
         f['log_word_count'] = float(np.log1p(wc))
@@ -408,7 +438,7 @@ class GujaratiStyleMatrixExtractor:
 
 
 # ============================================================================
-# SAFE PIPELINE — robust wrapper around the pickled training pipeline.
+# SAFE PIPELINE
 # ============================================================================
 class SafePipeline:
     def __init__(self, raw_pipeline):
@@ -477,7 +507,7 @@ class SafePipeline:
 
 
 # ============================================================================
-# Aliases so unpickling can find the classes it was saved with
+# Aliases for pickle compatibility
 # ============================================================================
 Fpipe = SafePipeline
 StyleExt = GujaratiStyleMatrixExtractor
@@ -555,10 +585,8 @@ def build_calculation_trace(text: str) -> List[Dict[str, Any]]:
 
     eng_chars = len(ext.english_letters.findall(text))
     guj_chars = len(ext.gujarati_letters.findall(text))
-
     trad = sum(text.count(c) for c in ext.traditional_translit)
     mod = sum(text.count(c) for c in ext.modern_translit)
-
     first_200 = text[:200]
     citation_n = len(re.findall(r'\[\d+\]', text))
     heading_n = len(re.findall(r'==+.*?==+', text))
@@ -568,146 +596,103 @@ def build_calculation_trace(text: str) -> List[Dict[str, Any]]:
 
     def add(name, formula, explanation, value):
         n[0] += 1
-        trace.append({
-            "n": n[0], "name": name, "value": value,
-            "formula": formula, "explanation": explanation,
-        })
+        trace.append({"n": n[0], "name": name, "value": value,
+                      "formula": formula, "explanation": explanation})
 
     add("word_count", "len(tokenize_words(text))",
-        f"Total word-tokens found: {len(words)}. "
-        f"Tokenizer regex: [\\u0A80-\\u0AFF]+ | [a-zA-Z]+ | [0-9]+",
-        feats['word_count'])
-
+        f"Total word-tokens found: {len(words)}.", feats['word_count'])
     add("log_word_count", "log1p(word_count)",
-        f"log(1 + {len(words)}) = {feats['log_word_count']:.4f}  (smooths huge word counts)",
+        f"log(1 + {len(words)}) = {feats['log_word_count']:.4f}",
         feats['log_word_count'])
-
     add("char_count", "len(text)",
-        f"Raw character count including spaces and punctuation: {len(text)}",
-        feats['char_count'])
-
+        f"Raw character count: {len(text)}", feats['char_count'])
     add("log_char_count", "log1p(char_count)",
         f"log(1 + {len(text)}) = {feats['log_char_count']:.4f}",
         feats['log_char_count'])
-
-    add("sentence_count", "non-empty sentences split on . ! ? |",
-        f"Found {len(sentences)} sentences each with >2 chars.",
-        feats['sentence_count'])
-
+    add("sentence_count", "non-empty sentences",
+        f"Found {len(sentences)} sentences.", feats['sentence_count'])
     add("avg_word_length", "mean(len(w) for w in words)",
-        f"Sum of all word lengths / {len(words)} tokens = "
         f"{sum(len(w) for w in words)}/{len(words)} = {feats['avg_word_length']:.4f}",
         feats['avg_word_length'])
 
     if sent_lengths:
         add("avg_sentence_length", "mean(sent_lengths)",
-            f"Sum of sentence word counts / number of sentences = "
             f"{sum(sent_lengths)}/{len(sent_lengths)} = {feats['avg_sentence_length']:.2f}",
             feats['avg_sentence_length'])
         add("std_sentence_length", "std(sent_lengths)",
-            f"Standard deviation of sentence lengths = {feats['std_sentence_length']:.2f}",
+            f"Std dev = {feats['std_sentence_length']:.2f}",
             feats['std_sentence_length'])
         add("max_sentence_length", "max(sent_lengths)",
-            f"Longest sentence: {int(feats['max_sentence_length'])} words",
+            f"Longest = {int(feats['max_sentence_length'])} words",
             feats['max_sentence_length'])
         add("min_sentence_length", "min(sent_lengths)",
-            f"Shortest sentence: {int(feats['min_sentence_length'])} words",
+            f"Shortest = {int(feats['min_sentence_length'])} words",
             feats['min_sentence_length'])
     else:
         for k in ['avg_sentence_length', 'std_sentence_length',
                   'max_sentence_length', 'min_sentence_length']:
-            add(k, "(no sentences)", "Not enough text to compute.", 0.0)
+            add(k, "(no sentences)", "Not enough text.", 0.0)
 
-    add("type_token_ratio", "len(unique_words) / word_count",
-        f"Unique words = {len(uniq)}; ratio = {len(uniq)}/{len(words)} = "
-        f"{feats['type_token_ratio']:.4f}",
+    add("type_token_ratio", "len(unique) / word_count",
+        f"{len(uniq)}/{len(words)} = {feats['type_token_ratio']:.4f}",
         feats['type_token_ratio'])
-
-    add("hapax_ratio", "count(words with freq == 1) / unique_words",
-        f"Hapax words = {len(hapax)}; ratio = {len(hapax)}/{len(uniq)} = "
-        f"{feats['hapax_ratio']:.4f}",
+    add("hapax_ratio", "hapax / unique",
+        f"{len(hapax)}/{len(uniq)} = {feats['hapax_ratio']:.4f}",
         feats['hapax_ratio'])
-
-    add("v_markers_per_1000", "(v_marker_count / word_count) × 1000",
-        f"Visvakosh markers hit: " +
-        (", ".join(f"{m}×{c}" for m, c in v_hits.items() if c > 0) or "none") +
+    add("v_markers_per_1000", "(v_count / wc) × 1000",
+        f"V markers: " + (", ".join(f"{m}×{c}" for m, c in v_hits.items() if c > 0) or "none") +
         f"; ({v_total}/{wc})×1000 = {feats['v_markers_per_1000']:.2f}",
         feats['v_markers_per_1000'])
-
-    add("w_markers_per_1000", "(w_marker_count / word_count) × 1000",
-        f"Wikipedia markers hit: " +
-        (", ".join(f"{m}×{c}" for m, c in w_hits.items() if c > 0) or "none") +
+    add("w_markers_per_1000", "(w_count / wc) × 1000",
+        f"W markers: " + (", ".join(f"{m}×{c}" for m, c in w_hits.items() if c > 0) or "none") +
         f"; ({w_total}/{wc})×1000 = {feats['w_markers_per_1000']:.2f}",
         feats['w_markers_per_1000'])
-
-    add("marker_diff_per_1000", "(v_count − w_count) / word_count × 1000",
-        f"({v_total} − {w_total})/{wc} × 1000 = {feats['marker_diff_per_1000']:.2f}",
+    add("marker_diff_per_1000", "(v−w)/wc × 1000",
+        f"({v_total}−{w_total})/{wc}×1000 = {feats['marker_diff_per_1000']:.2f}",
         feats['marker_diff_per_1000'])
-
-    add("marker_ratio", "v_count / (v_count + w_count)",
+    add("marker_ratio", "v/(v+w)",
         f"{v_total}/({v_total}+{w_total}) = {feats['marker_ratio']:.4f}",
         feats['marker_ratio'])
-
-    add("passive_per_1000", "(passive_count / word_count) × 1000",
-        f"Passive hits: " +
-        (", ".join(f"{m}×{c}" for m, c in p_hits.items() if c > 0) or "none") +
-        f"; ({p_total}/{wc})×1000 = {feats['passive_per_1000']:.2f}",
+    add("passive_per_1000", "(passive/wc)×1000",
+        f"({p_total}/{wc})×1000 = {feats['passive_per_1000']:.2f}",
         feats['passive_per_1000'])
-
-    add("english_char_ratio", "english_char_count / char_count",
-        f"English letters = {eng_chars}; {eng_chars}/{cc} = "
-        f"{feats['english_char_ratio']:.4f}",
+    add("english_char_ratio", "eng/cc",
+        f"{eng_chars}/{cc} = {feats['english_char_ratio']:.4f}",
         feats['english_char_ratio'])
-
-    add("gujarati_char_ratio", "gujarati_char_count / char_count",
-        f"Gujarati letters = {guj_chars}; {guj_chars}/{cc} = "
-        f"{feats['gujarati_char_ratio']:.4f}",
+    add("gujarati_char_ratio", "guj/cc",
+        f"{guj_chars}/{cc} = {feats['gujarati_char_ratio']:.4f}",
         feats['gujarati_char_ratio'])
-
-    add("script_ratio", "guj_chars / (guj_chars + eng_chars + 1)",
-        f"{guj_chars}/({guj_chars}+{eng_chars}+1) = {feats['script_ratio']:.4f} "
-        f"(0=all English, 1=all Gujarati)",
+    add("script_ratio", "guj/(guj+eng+1)",
+        f"{guj_chars}/({guj_chars}+{eng_chars}+1) = {feats['script_ratio']:.4f}",
         feats['script_ratio'])
 
     def punct(name, char, label):
         raw = text.count(char)
-        add(name, f"(count of '{label}' / word_count) × 1000",
-            f"'{label}' appears {raw}× ; ({raw}/{wc})×1000 = "
-            f"{feats[name]:.2f}",
+        add(name, f"({label}/wc)×1000",
+            f"'{label}' = {raw}×; ({raw}/{wc})×1000 = {feats[name]:.2f}",
             feats[name])
 
     punct('colon_per_1000', ':', 'colon')
     punct('comma_per_1000', ',', 'comma')
-
     raw_paren = text.count('(') + text.count(')')
-    add('paren_per_1000', "((count '(' + count ')') / word_count) × 1000",
-        f"Parentheses appear {raw_paren}× ; ({raw_paren}/{wc})×1000 = "
-        f"{feats['paren_per_1000']:.2f}",
+    add('paren_per_1000', "(paren/wc)×1000",
+        f"{raw_paren}×; ({raw_paren}/{wc})×1000 = {feats['paren_per_1000']:.2f}",
         feats['paren_per_1000'])
-
     raw_sc = len(re.findall(r'\s,', text))
-    add('space_comma_per_1000', "(count of ' ,' / word_count) × 1000",
-        f"Space-before-comma '{raw_sc}' occurrences; ({raw_sc}/{wc})×1000 = "
-        f"{feats['space_comma_per_1000']:.2f}",
+    add('space_comma_per_1000', "(' ,'/wc)×1000",
+        f"{raw_sc}×; ({raw_sc}/{wc})×1000 = {feats['space_comma_per_1000']:.2f}",
         feats['space_comma_per_1000'])
-
     punct('hyphen_per_1000', '-', 'hyphen')
-    punct('danda_per_1000', '।', 'danda (।)')
+    punct('danda_per_1000', '।', 'danda')
 
-    add("citation_count", "len(re.findall(r'\\[\\d+\\]', text))",
-        f"Matches of [number] like [1],[2] → {citation_n}",
+    add("citation_count", "[N] matches", f"Citations = {citation_n}",
         feats['citation_count'])
-
-    add("wiki_heading_count", "len(re.findall(r'==+.*?==+', text))",
-        f"Wiki-style == headings found → {heading_n}",
+    add("wiki_heading_count", "== heading matches", f"Headings = {heading_n}",
         feats['wiki_heading_count'])
-
     add("colon_in_first_200", "1 if ':' in text[:200] else 0",
-        f"First 200 chars {'contain' if ':' in first_200 else 'do NOT contain'} a colon.",
+        f"{'yes' if feats['colon_in_first_200'] else 'no'}",
         feats['colon_in_first_200'])
-
-    add("def_in_first_200", "1 if any(એટલે | કહેવાય | ગણાય in text[:200]) else 0",
-        f"Definition marker in first 200 chars: "
+    add("def_in_first_200", "1 if definition marker in text[:200]",
         f"{'yes' if feats['def_in_first_200'] else 'no'}",
         feats['def_in_first_200'])
 
@@ -715,22 +700,13 @@ def build_calculation_trace(text: str) -> List[Dict[str, Any]]:
               'શામેલ', 'દ્વારા', 'સક્ષમ', 'ઉલ્લેખ', 'કરવામાં આવે છે']:
         key = 'cnt_' + m.replace(' ', '_')
         raw = text.count(m)
-        add(key, f"text.count('{m}')",
-            f"Occurrences of '{m}' = {raw}",
-            feats.get(key, 0.0))
+        add(key, f"text.count('{m}')", f"'{m}' = {raw}", feats.get(key, 0.0))
 
-    add("translit_traditional_count",
-        "Σ text.count(c) for c in ['ૉ','ૅ','ઑ','ઍ']",
-        f"Traditional characters found = {trad}",
-        feats['translit_traditional_count'])
-
-    add("translit_modern_count",
-        "Σ text.count(c) for c in ['ો','ે','ૈ']",
-        f"Modern characters found = {mod}",
-        feats['translit_modern_count'])
-
-    add("translit_style_ratio",
-        "traditional / (traditional + modern)",
+    add("translit_traditional_count", "Σ traditional chars",
+        f"Traditional = {trad}", feats['translit_traditional_count'])
+    add("translit_modern_count", "Σ modern chars",
+        f"Modern = {mod}", feats['translit_modern_count'])
+    add("translit_style_ratio", "trad/(trad+mod)",
         f"{trad}/({trad}+{mod}) = {feats['translit_style_ratio']:.4f}",
         feats['translit_style_ratio'])
 
@@ -867,10 +843,7 @@ def load_all_ml_models():
         fname = os.path.relpath(path, SCRIPT_DIR)
         size = os.path.getsize(path)
         base = os.path.basename(path)
-
-        if base in SKIP_FILES:
-            continue
-        if size < 200:
+        if base in SKIP_FILES or size < 200:
             continue
         try:
             data = joblib.load(path)
@@ -879,7 +852,6 @@ def load_all_ml_models():
             name = data.get("model_name", base.replace(".pkl", ""))
             if "model" not in data or "feature_pipeline" not in data:
                 continue
-
             safe_pipe = SafePipeline(data["feature_pipeline"])
             models[name] = {
                 "model": data["model"],
@@ -930,7 +902,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.header("🤖 ML Models Status")
-    st.caption(f"Injected: {INJECTED_MODULES}")
+    st.caption(f"Label swap: {'ON' if ML_SWAP_LABELS else 'OFF'}")
 
     if st.button("🔄 Reload Models", use_container_width=True, key="reload_btn"):
         st.session_state.pop("ml_models", None)
@@ -947,7 +919,7 @@ with st.sidebar:
 
 
 # ============================================================================
-# ML PREDICTION
+# ML PREDICTION  (with label orientation fix)
 # ============================================================================
 def ml_predict_one(text, name, bundle):
     model, pipeline = bundle["model"], bundle["pipeline"]
@@ -963,37 +935,44 @@ def ml_predict_one(text, name, bundle):
         X = pipeline.transform([text])
         if name in DENSE_ONLY:
             X = X.toarray()
-        pred = model.predict(X)[0]
-        out["prediction"] = "Wikipedia" if pred == 1 else "Visvakosh"
+        raw_pred = model.predict(X)[0]
 
+        # ---- CORRECTED INTERPRETATION ----
+        out["prediction"] = interpret_class_index(raw_pred)
+
+        # Probabilities (if any)
         if hasattr(model, "predict_proba"):
             try:
                 p = model.predict_proba(X)[0]
-                out["proba_v"] = float(p[0])
-                out["proba_w"] = float(p[1])
-                out["confidence"] = float(max(p))
+                pv, pw = orient_probabilities(p)
+                out["proba_v"] = pv
+                out["proba_w"] = pw
+                out["confidence"] = max(pv, pw)
             except Exception:
                 pass
 
+        # Decision function fallback
         if out["confidence"] is None and hasattr(model, "decision_function"):
             try:
                 d = float(model.decision_function(X)[0])
-                out["confidence"] = float(1 / (1 + np.exp(-abs(d))))
-                out["proba_w"] = float(1 / (1 + np.exp(-d)))
-                out["proba_v"] = 1.0 - out["proba_w"]
+                pv, pw = orient_decision(d)
+                out["proba_v"] = pv
+                out["proba_w"] = pw
+                out["confidence"] = max(pv, pw)
             except Exception:
                 out["confidence"] = 1.0
-                out["proba_v"] = 1.0 if pred == 0 else 0.0
-                out["proba_w"] = 1.0 if pred == 1 else 0.0
+                out["proba_v"] = 1.0 if out["prediction"] == "Visvakosh" else 0.0
+                out["proba_w"] = 1.0 if out["prediction"] == "Wikipedia" else 0.0
 
         if out["confidence"] is None:
             out["confidence"] = 0.5
             out["proba_v"] = 0.5
             out["proba_w"] = 0.5
 
+        # Reasoning
         feats = GujaratiStyleMatrixExtractor().extract_style_matrix(text)
         reasons, signals = [], []
-        if pred == 1:
+        if out["prediction"] == "Wikipedia":
             if feats.get("w_markers_per_1000", 0) > feats.get("v_markers_per_1000", 0):
                 reasons.append(f"Wikipedia markers dominate "
                                f"({feats['w_markers_per_1000']:.1f}/1000 vs "
@@ -1071,7 +1050,6 @@ if analyze_btn:
     with st.spinner("Analyzing..."):
         result = analyze_text(text_input)
         trace = build_calculation_trace(text_input)
-        # Run category detection using the rule-based prediction as a hint
         cat_result = detect_category(text_input, source=result.get('prediction'))
 
     st.success("✅ Analysis complete")
@@ -1091,20 +1069,17 @@ if analyze_btn:
         unsafe_allow_html=True
     )
 
-    # ---------------- CATEGORY DETECTION BANNER ----------------
+    # ---------------- CATEGORY BANNER ----------------
     st.markdown("### 🏷️ Detected Category")
     cat_name = cat_result["category"]
     cat_source = cat_result["best_source"]
 
     if cat_source == "Visvakosh":
-        banner_css = "cat-banner cat-banner-v"
-        banner_emoji = "📖"
+        banner_css = "cat-banner cat-banner-v"; banner_emoji = "📖"
     elif cat_source == "Wikipedia":
-        banner_css = "cat-banner cat-banner-w"
-        banner_emoji = "🌐"
+        banner_css = "cat-banner cat-banner-w"; banner_emoji = "🌐"
     else:
-        banner_css = "cat-banner cat-banner-unk"
-        banner_emoji = "❓"
+        banner_css = "cat-banner cat-banner-unk"; banner_emoji = "❓"
 
     best_info = cat_result.get("best_info", {})
     vh = best_info.get("v_hits", 0)
@@ -1116,12 +1091,10 @@ if analyze_btn:
         f'<strong>{cat_name}</strong><br>'
         f'<span style="font-size:0.9rem;font-weight:normal;">'
         f'Matched {vh} Visvakosh keyword(s) and {wh} Wikipedia keyword(s) '
-        f'in this category.</span>'
-        f'</div>',
+        f'in this category.</span></div>',
         unsafe_allow_html=True
     )
 
-    # Show matched words as chips
     if best_info and (best_info.get("v_words") or best_info.get("w_words")):
         st.markdown("**🔑 Category keywords found in text:**")
         chips = []
@@ -1133,7 +1106,6 @@ if analyze_btn:
             chips.append(f'<span class="cat-word-chip chip-w">{w} ×{cnt}</span>')
         st.markdown(" ".join(chips), unsafe_allow_html=True)
 
-    # Show all categories ranked
     with st.expander("📊 All category scores (ranked)"):
         scores = cat_result.get("scores", {})
         ranked = sorted(scores.items(), key=lambda kv: -kv[1]["score"])
@@ -1162,7 +1134,7 @@ if analyze_btn:
     c3.metric("V Ratio", f"{v['visvakosh_ratio']:.1%}")
     st.progress(v['visvakosh_ratio'])
 
-    # ---------------- NUMBERED CALCULATION TRACE ----------------
+    # ---------------- NUMBERED TRACE ----------------
     st.markdown("---")
     st.header("🧮 Numbered Style Feature Calculation Trace")
     st.caption("Every style-matrix feature used by the ML models, with formula and "
@@ -1358,6 +1330,7 @@ if analyze_btn:
         ml_report = {
             "ensemble_verdict": ens_verdict,
             "votes": {"visvakosh": n_v, "wikipedia": n_w, "total": total},
+            "label_swap_applied": ML_SWAP_LABELS,
             "category_detection": {
                 "category": cat_result["category"],
                 "best_source": cat_result["best_source"],
