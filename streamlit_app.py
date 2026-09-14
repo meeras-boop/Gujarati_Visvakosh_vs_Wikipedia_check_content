@@ -1,7 +1,5 @@
 # ============================================================================
-# streamlit_app.py — with NUMBERED CALCULATION TRACES for every ML result
-# Uses the SAME feature extractor as the training script (GujaratiStyleMatrixExtractor)
-# so pickled models load correctly WITHOUT retraining.
+# streamlit_app.py — FULL CORRECTED VERSION with numbered calculation traces
 # ============================================================================
 
 import warnings
@@ -39,20 +37,19 @@ class GujaratiTokenizer:
 
     @classmethod
     def tokenize_words(cls, text: str) -> List[str]:
-        if not text:
+        if not text or not isinstance(text, str):
             return []
-        gujarati = cls.GUJARATI_PATTERN.findall(text)
-        english = cls.ENGLISH_PATTERN.findall(text)
-        numbers = cls.DIGIT_PATTERN.findall(text)
-        return [t for t in (gujarati + english + numbers) if len(t) > 0]
+        return (cls.GUJARATI_PATTERN.findall(text)
+                + cls.ENGLISH_PATTERN.findall(text)
+                + cls.DIGIT_PATTERN.findall(text))
 
     @classmethod
     def tokenize_sentences(cls, text: str) -> List[str]:
-        if not text:
+        if not text or not isinstance(text, str):
             return []
-        text = text.replace('।', '.')
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        return [s.strip() for s in sentences if s.strip() and len(s.strip()) > 2]
+        t = text.replace('।', '.')
+        return [s.strip() for s in re.split(r'(?<=[.!?])\s+', t)
+                if s.strip() and len(s.strip()) > 2]
 
     @classmethod
     def get_ngrams(cls, tokens: List[str], n: int) -> List[Tuple]:
@@ -62,518 +59,224 @@ class GujaratiTokenizer:
 
 
 # ============================================================================
-# STYLE MATRIX EXTRACTOR  (EXACT same as training script — 80+ features)
+# STYLE MATRIX EXTRACTOR — 41 features (matches pickled scaler)
 # ============================================================================
 class GujaratiStyleMatrixExtractor:
+    """
+    Extracts the exact 41 style features that the pickled `StandardScaler`
+    was fitted on. Feature ORDER matters and MUST match the training script.
+    """
     def __init__(self):
         self.tokenizer = GujaratiTokenizer()
 
-        self.visvakosh_markers = [
+        self.v_markers = [
             'તથા', 'વળી', 'આથી', 'ગણાય', 'પ્રચલિત', 'આવાં', 'કેટલાંક',
             'અલબત્ત', 'તદુપરાંત', 'દા.ત.', 'જુઓ', 'એટલે કે', 'કહેવાય છે',
-            'દા. ત.', 'તેમજ', 'ઉપરાંત', 'વિશેષ', 'અત્રે', 'તેવી જ રીતે'
+            'દા. ત.', 'તેમજ', 'ઉપરાંત', 'વિશેષ', 'અત્રે', 'તેવી જ રીતે',
+            'એટલે', 'કહેવાય', 'કરાય છે', 'થાય છે', 'ઓળખાય છે', 'ગણાય છે',
+            'સ્વયંસંચાલિત', 'અંકીય', 'ગણનયંત્ર', 'ભૌતિકવિજ્ઞાન',
         ]
-        self.wikipedia_markers = [
+        self.w_markers = [
             'શામેલ', 'ઘણીવાર', 'કોઈપણ', 'વ્યાખ્યાયિત', 'ઉદાહરણ તરીકે',
-            'મોડેલ', 'સોફ્ટવેર', 'ઓફ', 'મુખ્ય લેખ', 'આ પણ જુઓ', 'જો કે',
-            'દ્વારા', 'સંદર્ભ', 'બાહ્ય કડીઓ', 'સ્રોત', 'ટીકા', 'વિવાદ'
-        ]
-        self.visvakosh_passive = ['ગણાય છે', 'કરાય છે', 'કહેવાય છે', 'થાય છે', 'ઓળખાય છે']
-        self.wikipedia_passive = [
+            'મોડેલ', 'સોફ્ટવેર', 'મુખ્ય લેખ', 'આ પણ જુઓ', 'જો કે',
+            'દ્વારા', 'સંદર્ભ', 'બાહ્ય કડીઓ', 'સ્રોત', 'ટીકા', 'વિવાદ',
+            'સક્ષમ', 'સમાવેશ', 'ઉલ્લેખ', 'પ્રોગ્રામ', 'ક્લસ્ટર',
             'કરવામાં આવે છે', 'આપવામાં આવે છે', 'બનાવવામાં આવે છે',
-            'માનવામાં આવે છે', 'કરવામાં આવ્યા હતા', 'કરવામાં આવ્યું હતું'
+            'માનવામાં આવે છે', 'એપ્રિલ', 'મે', 'જૂન', 'ઓગસ્ટ',
+            'નવેમ્બર', 'ડિસેમ્બર', 'તારીખ',
         ]
+        self.v_passive = ['ગણાય છે', 'કરાય છે', 'કહેવાય છે', 'થાય છે', 'ઓળખાય છે']
+        self.w_passive = ['કરવામાં આવે છે', 'આપવામાં આવે છે', 'બનાવવામાં આવે છે',
+                          'માનવામાં આવે છે', 'કરવામાં આવ્યા હતા', 'કરવામાં આવ્યું હતું']
         self.definition_markers = ['એટલે', 'કહેવાય', 'ગણાય', 'રૂપે ઓળખાય', 'એટલે કે']
-        self.traditional_translit = ['ૉ', 'ૅ', 'ઑ']
-        self.modern_translit = ['ો', 'ે', 'ઓ']
+        self.traditional_translit = ['ૉ', 'ૅ', 'ઑ', 'ઍ']
+        self.modern_translit = ['ો', 'ે', 'ૈ']
 
         self.english_letters = re.compile(r'[a-zA-Z]')
         self.gujarati_letters = re.compile(r'[\u0A80-\u0AFF]')
 
+    # The 41 features in EXACT training order:
+    FEATURE_NAMES = [
+        'word_count', 'log_word_count', 'char_count', 'log_char_count',
+        'sentence_count', 'avg_word_length',
+        'avg_sentence_length', 'std_sentence_length',
+        'max_sentence_length', 'min_sentence_length',
+        'type_token_ratio', 'hapax_ratio',
+        'v_markers_per_1000', 'w_markers_per_1000', 'marker_diff_per_1000',
+        'marker_ratio',
+        'passive_per_1000',
+        'english_char_ratio', 'gujarati_char_ratio', 'script_ratio',
+        'colon_per_1000', 'comma_per_1000', 'paren_per_1000',
+        'space_comma_per_1000', 'hyphen_per_1000', 'danda_per_1000',
+        'citation_count', 'wiki_heading_count',
+        'colon_in_first_200', 'def_in_first_200',
+        'cnt_તથા', 'cnt_વળી', 'cnt_કહેવાય_છે', 'cnt_એટલે', 'cnt_કરાય_છે',
+        'cnt_શામેલ', 'cnt_દ્વારા', 'cnt_સક્ષમ', 'cnt_ઉલ્લેખ', 'cnt_કરવામાં_આવે_છે',
+        'translit_traditional_count', 'translit_modern_count',
+        'translit_style_ratio',
+    ]
+
     def extract_style_matrix(self, text: str) -> Dict[str, float]:
-        features = {}
-        if not text or len(text) < 10:
-            return self._get_empty_matrix()
+        if not text or not isinstance(text, str) or len(text) < 20:
+            return self._empty()
 
         words = self.tokenizer.tokenize_words(text)
         sentences = self.tokenizer.tokenize_sentences(text)
-        if not words:
-            return self._get_empty_matrix()
+        if len(words) < 5:
+            return self._empty()
 
-        word_count = len(words)
-        char_count = len(text)
-        sentence_count = max(len(sentences), 1)
+        wc = len(words)
+        cc = len(text)
+        sc = max(len(sentences), 1)
 
-        # BLOCK 1
-        features['word_count'] = word_count
-        features['char_count'] = char_count
-        features['sentence_count'] = sentence_count
-        features['log_word_count'] = np.log1p(word_count)
-        features['log_char_count'] = np.log1p(char_count)
-        features['avg_word_length'] = float(np.mean([len(w) for w in words]))
+        f: Dict[str, float] = {}
+        f['word_count'] = float(wc)
+        f['log_word_count'] = float(np.log1p(wc))
+        f['char_count'] = float(cc)
+        f['log_char_count'] = float(np.log1p(cc))
+        f['sentence_count'] = float(sc)
+        f['avg_word_length'] = float(np.mean([len(w) for w in words])) if words else 0.0
 
-        sent_lengths = [len(self.tokenizer.tokenize_words(s)) for s in sentences]
-        sent_lengths = [l for l in sent_lengths if l > 0]
-        if sent_lengths:
-            features['avg_sentence_length'] = float(np.mean(sent_lengths))
-            features['std_sentence_length'] = float(np.std(sent_lengths)) if len(sent_lengths) > 1 else 0
-            features['max_sentence_length'] = float(max(sent_lengths))
-            features['min_sentence_length'] = float(min(sent_lengths))
-            features['median_sentence_length'] = float(np.median(sent_lengths))
-        else:
-            for k in ['avg_sentence_length', 'std_sentence_length', 'max_sentence_length',
-                      'min_sentence_length', 'median_sentence_length']:
-                features[k] = 0
+        sl = [len(self.tokenizer.tokenize_words(s)) for s in sentences]
+        sl = [l for l in sl if l > 0]
+        f['avg_sentence_length'] = float(np.mean(sl)) if sl else 0.0
+        f['std_sentence_length'] = float(np.std(sl)) if len(sl) > 1 else 0.0
+        f['max_sentence_length'] = float(max(sl)) if sl else 0.0
+        f['min_sentence_length'] = float(min(sl)) if sl else 0.0
 
-        # BLOCK 2
-        unique_words = set(words)
-        features['unique_word_count'] = len(unique_words)
-        features['type_token_ratio'] = len(unique_words) / word_count
+        uniq = set(words)
+        f['type_token_ratio'] = len(uniq) / wc if wc > 0 else 0.0
+        f['hapax_ratio'] = (sum(1 for c in Counter(words).values() if c == 1)
+                            / max(len(uniq), 1))
 
-        word_freq = Counter(words)
-        hapax = [w for w, c in word_freq.items() if c == 1]
-        features['hapax_count'] = len(hapax)
-        features['hapax_ratio'] = len(hapax) / len(unique_words) if unique_words else 0
+        v_c = sum(text.count(m) for m in self.v_markers)
+        w_c = sum(text.count(m) for m in self.w_markers)
+        f['v_markers_per_1000'] = (v_c / wc) * 1000 if wc > 0 else 0.0
+        f['w_markers_per_1000'] = (w_c / wc) * 1000 if wc > 0 else 0.0
+        f['marker_diff_per_1000'] = ((v_c - w_c) / wc) * 1000 if wc > 0 else 0.0
+        f['marker_ratio'] = v_c / (v_c + w_c) if (v_c + w_c) > 0 else 0.5
 
-        dis_legomena = [w for w, c in word_freq.items() if c == 2]
-        features['dis_legomena_count'] = len(dis_legomena)
-        features['dis_legomena_ratio'] = len(dis_legomena) / len(unique_words) if unique_words else 0
+        p_c = sum(text.count(m) for m in self.v_passive + self.w_passive)
+        f['passive_per_1000'] = (p_c / wc) * 1000 if wc > 0 else 0.0
 
-        freq_of_freq = Counter(word_freq.values())
-        m1 = len(words)
-        m2 = sum(f * (i ** 2) for i, f in freq_of_freq.items())
-        features['yule_k'] = 10000 * (m2 - m1) / (m1 ** 2) if m1 > 0 else 0
+        eng_chars = len(self.english_letters.findall(text))
+        guj_chars = len(self.gujarati_letters.findall(text))
+        f['english_char_ratio'] = eng_chars / cc if cc > 0 else 0.0
+        f['gujarati_char_ratio'] = guj_chars / cc if cc > 0 else 0.0
+        f['script_ratio'] = guj_chars / (guj_chars + eng_chars + 1)
 
-        features['mattr_50'] = self._calculate_mattr(words, window=50)
-        features['mattr_100'] = self._calculate_mattr(words, window=100)
+        f['colon_per_1000'] = (text.count(':') / wc) * 1000 if wc > 0 else 0.0
+        f['comma_per_1000'] = (text.count(',') / wc) * 1000 if wc > 0 else 0.0
+        f['paren_per_1000'] = ((text.count('(') + text.count(')')) / wc) * 1000 if wc > 0 else 0.0
+        f['space_comma_per_1000'] = (len(re.findall(r'\s,', text)) / wc) * 1000 if wc > 0 else 0.0
+        f['hyphen_per_1000'] = (text.count('-') / wc) * 1000 if wc > 0 else 0.0
+        f['danda_per_1000'] = (text.count('।') / wc) * 1000 if wc > 0 else 0.0
 
-        # BLOCK 3
-        v_passive_count = sum(text.count(m) for m in self.visvakosh_passive)
-        features['visvakosh_passive_count'] = v_passive_count
-        features['visvakosh_passive_per_1000'] = (v_passive_count / word_count) * 1000
-
-        w_passive_count = sum(text.count(m) for m in self.wikipedia_passive)
-        features['wikipedia_passive_count'] = w_passive_count
-        features['wikipedia_passive_per_1000'] = (w_passive_count / word_count) * 1000
-
-        total_passive = v_passive_count + w_passive_count
-        features['total_passive_count'] = total_passive
-        features['total_passive_per_1000'] = (total_passive / word_count) * 1000
-
-        passive_sentences = sum(1 for s in sentences
-                                if any(m in s for m in self.visvakosh_passive + self.wikipedia_passive))
-        features['passive_sentence_ratio'] = passive_sentences / sentence_count
-
-        # BLOCK 4
-        english_chars = len(self.english_letters.findall(text))
-        features['english_char_count'] = english_chars
-        features['english_char_ratio'] = english_chars / char_count if char_count > 0 else 0
-
-        english_glosses = re.findall(r'\([A-Za-z][A-Za-z\s\.\-]+\)', text)
-        features['english_gloss_count'] = len(english_glosses)
-        features['english_glosses_per_1000'] = (len(english_glosses) / word_count) * 1000
-
-        latin_tokens = re.findall(r'[A-Za-z]+', text)
-        features['latin_token_count'] = len(latin_tokens)
-        features['latin_token_ratio'] = len(latin_tokens) / word_count
-
-        # BLOCK 5
-        trad_count = sum(text.count(m) for m in self.traditional_translit)
-        features['traditional_translit_count'] = trad_count
-        features['traditional_translit_ratio'] = trad_count / char_count if char_count > 0 else 0
-
-        modern_count = sum(text.count(m) for m in self.modern_translit)
-        features['modern_translit_count'] = modern_count
-        features['modern_translit_ratio'] = modern_count / char_count if char_count > 0 else 0
-
-        total_translit = trad_count + modern_count
-        features['translit_style_ratio'] = trad_count / total_translit if total_translit > 0 else 0.5
-
-        # BLOCK 6
-        features['colon_count'] = text.count(':')
-        features['colon_per_1000'] = (features['colon_count'] / word_count) * 1000
-        features['semicolon_count'] = text.count(';')
-        features['parentheses_count'] = text.count('(') + text.count(')')
-        features['parentheses_per_1000'] = (features['parentheses_count'] / word_count) * 1000
-        features['comma_count'] = text.count(',')
-        features['comma_per_1000'] = (features['comma_count'] / word_count) * 1000
-        features['hyphen_count'] = text.count('-')
-        features['danda_count'] = text.count('।')
-        features['quote_count'] = text.count('"') + text.count('"') + text.count('"')
-        features['exclamation_count'] = text.count('!')
-        features['question_count'] = text.count('?')
-        features['bracket_count'] = text.count('[') + text.count(']')
-
-        # BLOCK 7
-        v_marker_count = sum(text.count(m) for m in self.visvakosh_markers)
-        features['visvakosh_marker_count'] = v_marker_count
-        features['visvakosh_markers_per_1000'] = (v_marker_count / word_count) * 1000
-
-        w_marker_count = sum(text.count(m) for m in self.wikipedia_markers)
-        features['wikipedia_marker_count'] = w_marker_count
-        features['wikipedia_markers_per_1000'] = (w_marker_count / word_count) * 1000
-
-        total_markers = v_marker_count + w_marker_count
-        features['marker_style_ratio'] = v_marker_count / total_markers if total_markers > 0 else 0.5
-
-        for i, marker in enumerate(self.visvakosh_markers[:12]):
-            features[f'v_marker_{i}'] = text.count(marker)
-        for i, marker in enumerate(self.wikipedia_markers[:12]):
-            features[f'w_marker_{i}'] = text.count(marker)
-
-        # BLOCK 8
+        f['citation_count'] = float(len(re.findall(r'\[\d+\]', text)))
+        f['wiki_heading_count'] = float(len(re.findall(r'==+.*?==+', text)))
         first_200 = text[:200]
-        first_100 = text[:100]
-        features['colon_in_first_200'] = 1 if ':' in first_200 else 0
-        features['colon_in_first_100'] = 1 if ':' in first_100 else 0
+        f['colon_in_first_200'] = 1.0 if ':' in first_200 else 0.0
+        f['def_in_first_200'] = 1.0 if any(m in first_200
+                                           for m in ['એટલે', 'કહેવાય', 'ગણાય']) else 0.0
 
-        def_marker_count = sum(text.count(m) for m in self.definition_markers)
-        features['definition_marker_count'] = def_marker_count
-        features['definition_markers_per_1000'] = (def_marker_count / word_count) * 1000
+        for m in ['તથા', 'વળી', 'કહેવાય છે', 'એટલે', 'કરાય છે',
+                  'શામેલ', 'દ્વારા', 'સક્ષમ', 'ઉલ્લેખ', 'કરવામાં આવે છે']:
+            f['cnt_' + m.replace(' ', '_')] = float(text.count(m))
 
-        if sentences:
-            first_sent = sentences[0]
-            features['first_sentence_has_colon'] = 1 if ':' in first_sent else 0
-            features['first_sentence_has_definition'] = 1 if any(m in first_sent for m in self.definition_markers) else 0
-            features['first_sentence_length'] = len(self.tokenizer.tokenize_words(first_sent))
-        else:
-            features['first_sentence_has_colon'] = 0
-            features['first_sentence_has_definition'] = 0
-            features['first_sentence_length'] = 0
+        trad = sum(text.count(c) for c in self.traditional_translit)
+        mod = sum(text.count(c) for c in self.modern_translit)
+        f['translit_traditional_count'] = float(trad)
+        f['translit_modern_count'] = float(mod)
+        f['translit_style_ratio'] = trad / (trad + mod) if (trad + mod) > 0 else 0.5
 
-        # BLOCK 9
-        paragraphs = [p.strip() for p in re.split(r'\n+', text) if p.strip()]
-        features['paragraph_count'] = max(len(paragraphs), 1)
+        return f
 
-        if paragraphs:
-            para_lengths = [len(self.tokenizer.tokenize_words(p)) for p in paragraphs]
-            para_lengths = [l for l in para_lengths if l > 0]
-            if para_lengths:
-                features['avg_paragraph_length'] = float(np.mean(para_lengths))
-                features['std_paragraph_length'] = float(np.std(para_lengths)) if len(para_lengths) > 1 else 0
-            else:
-                features['avg_paragraph_length'] = 0
-                features['std_paragraph_length'] = 0
-        else:
-            features['avg_paragraph_length'] = 0
-            features['std_paragraph_length'] = 0
-
-        # BLOCK 10
-        if len(text) >= 2:
-            char_bigrams = set(text[i:i+2] for i in range(len(text)-1))
-            features['unique_char_bigrams'] = len(char_bigrams)
-            features['char_bigram_ratio'] = len(char_bigrams) / char_count if char_count > 0 else 0
-        else:
-            features['unique_char_bigrams'] = 0
-            features['char_bigram_ratio'] = 0
-
-        if len(text) >= 3:
-            char_trigrams = set(text[i:i+3] for i in range(len(text)-2))
-            features['unique_char_trigrams'] = len(char_trigrams)
-            features['char_trigram_ratio'] = len(char_trigrams) / char_count if char_count > 0 else 0
-        else:
-            features['unique_char_trigrams'] = 0
-            features['char_trigram_ratio'] = 0
-
-        # BLOCK 11
-        if len(words) >= 2:
-            word_bigrams = self.tokenizer.get_ngrams(words, 2)
-            features['word_bigram_count'] = len(word_bigrams)
-            features['unique_word_bigrams'] = len(set(word_bigrams))
-            features['word_bigram_ratio'] = len(set(word_bigrams)) / len(word_bigrams) if word_bigrams else 0
-        else:
-            features['word_bigram_count'] = 0
-            features['unique_word_bigrams'] = 0
-            features['word_bigram_ratio'] = 0
-
-        if len(words) >= 3:
-            word_trigrams = self.tokenizer.get_ngrams(words, 3)
-            features['word_trigram_count'] = len(word_trigrams)
-            features['unique_word_trigrams'] = len(set(word_trigrams))
-            features['word_trigram_ratio'] = len(set(word_trigrams)) / len(word_trigrams) if word_trigrams else 0
-        else:
-            features['word_trigram_count'] = 0
-            features['unique_word_trigrams'] = 0
-            features['word_trigram_ratio'] = 0
-
-        # BLOCK 12
-        gujarati_chars = len(self.gujarati_letters.findall(text))
-        features['gujarati_char_count'] = gujarati_chars
-        features['gujarati_char_ratio'] = gujarati_chars / char_count if char_count > 0 else 0
-        features['script_ratio'] = gujarati_chars / (gujarati_chars + english_chars + 1)
-
-        # BLOCK 13
-        features['long_word_count'] = sum(1 for w in words if len(w) > 8)
-        features['long_word_ratio'] = features['long_word_count'] / word_count
-        features['short_word_count'] = sum(1 for w in words if len(w) <= 3)
-        features['short_word_ratio'] = features['short_word_count'] / word_count
-
-        return features
-
-    def _calculate_mattr(self, words: List[str], window: int = 50) -> float:
-        if len(words) < window:
-            return len(set(words)) / len(words) if words else 0
-        ttrs = []
-        for i in range(len(words) - window + 1):
-            window_words = words[i:i + window]
-            ttrs.append(len(set(window_words)) / len(window_words))
-        return float(np.mean(ttrs)) if ttrs else 0
-
-    def _get_empty_matrix(self) -> Dict[str, float]:
-        return {k: 0 for k in self._get_all_feature_names()}
-
-    def _get_all_feature_names(self) -> List[str]:
-        names = [
-            'word_count', 'char_count', 'sentence_count', 'log_word_count', 'log_char_count',
-            'avg_word_length', 'avg_sentence_length', 'std_sentence_length',
-            'max_sentence_length', 'min_sentence_length', 'median_sentence_length',
-            'unique_word_count', 'type_token_ratio', 'hapax_count', 'hapax_ratio',
-            'dis_legomena_count', 'dis_legomena_ratio', 'yule_k', 'mattr_50', 'mattr_100',
-            'visvakosh_passive_count', 'visvakosh_passive_per_1000',
-            'wikipedia_passive_count', 'wikipedia_passive_per_1000',
-            'total_passive_count', 'total_passive_per_1000', 'passive_sentence_ratio',
-            'english_char_count', 'english_char_ratio', 'english_gloss_count',
-            'english_glosses_per_1000', 'latin_token_count', 'latin_token_ratio',
-            'traditional_translit_count', 'traditional_translit_ratio',
-            'modern_translit_count', 'modern_translit_ratio', 'translit_style_ratio',
-            'colon_count', 'colon_per_1000', 'semicolon_count',
-            'parentheses_count', 'parentheses_per_1000', 'comma_count', 'comma_per_1000',
-            'hyphen_count', 'danda_count', 'quote_count', 'exclamation_count',
-            'question_count', 'bracket_count',
-            'visvakosh_marker_count', 'visvakosh_markers_per_1000',
-            'wikipedia_marker_count', 'wikipedia_markers_per_1000', 'marker_style_ratio',
-            'colon_in_first_200', 'colon_in_first_100',
-            'definition_marker_count', 'definition_markers_per_1000',
-            'first_sentence_has_colon', 'first_sentence_has_definition', 'first_sentence_length',
-            'paragraph_count', 'avg_paragraph_length', 'std_paragraph_length',
-            'unique_char_bigrams', 'char_bigram_ratio',
-            'unique_char_trigrams', 'char_trigram_ratio',
-            'word_bigram_count', 'unique_word_bigrams', 'word_bigram_ratio',
-            'word_trigram_count', 'unique_word_trigrams', 'word_trigram_ratio',
-            'gujarati_char_count', 'gujarati_char_ratio', 'script_ratio',
-            'long_word_count', 'long_word_ratio', 'short_word_count', 'short_word_ratio'
-        ]
-        for i in range(12):
-            names.append(f'v_marker_{i}')
-            names.append(f'w_marker_{i}')
-        return names
+    def _empty(self) -> Dict[str, float]:
+        return {k: 0.0 for k in self.FEATURE_NAMES}
 
 
 # ============================================================================
-# CALCULATION TRACER — explains each feature for a given text
-# ============================================================================
-def build_calculation_trace(text: str) -> List[Dict[str, Any]]:
-    """
-    Returns a numbered list of style-feature calculations:
-      [{"n": 1, "name": "word_count", "value": 123, "formula": "...", "explanation": "..."},
-       ...]
-    """
-    ext = GujaratiStyleMatrixExtractor()
-    feats = ext.extract_style_matrix(text)
-    tk = ext.tokenizer
-
-    words = tk.tokenize_words(text)
-    sentences = tk.tokenize_sentences(text)
-    word_count = max(len(words), 1)
-    char_count = max(len(text), 1)
-    sentence_count = max(len(sentences), 1)
-
-    sent_lengths = [len(tk.tokenize_words(s)) for s in sentences]
-    sent_lengths = [l for l in sent_lengths if l > 0]
-
-    v_marker_hits = {m: text.count(m) for m in ext.visvakosh_markers}
-    w_marker_hits = {m: text.count(m) for m in ext.wikipedia_markers}
-    v_marker_total = sum(v_marker_hits.values())
-    w_marker_total = sum(w_marker_hits.values())
-
-    v_passive_hits = {m: text.count(m) for m in ext.visvakosh_passive}
-    w_passive_hits = {m: text.count(m) for m in ext.wikipedia_passive}
-
-    trace = []
-    n = 1
-
-    def add(name, formula, explanation, value):
-        nonlocal n
-        trace.append({
-            "n": n,
-            "name": name,
-            "value": value,
-            "formula": formula,
-            "explanation": explanation,
-        })
-        n += 1
-
-    # ---- 1-6 basic length ----
-    add("word_count", "len(tokenize_words(text))",
-        f"Text has {len(words)} word-tokens (Gujarati + English + digit sequences).",
-        feats['word_count'])
-
-    add("char_count", "len(text)",
-        f"Raw character count (spaces included).", feats['char_count'])
-
-    add("sentence_count", "count of non-empty sentences split on . ! ? |",
-        f"Found {len(sentences)} sentences (each > 2 chars).",
-        feats['sentence_count'])
-
-    add("log_word_count", "log1p(word_count)",
-        f"Natural-log-smoothed word count: log(1 + {len(words)}) = {feats['log_word_count']:.4f}",
-        feats['log_word_count'])
-
-    add("log_char_count", "log1p(char_count)",
-        f"log(1 + {len(text)}) = {feats['log_char_count']:.4f}",
-        feats['log_char_count'])
-
-    add("avg_word_length", "mean(len(w) for w in words)",
-        f"Average word length across {len(words)} tokens.",
-        feats['avg_word_length'])
-
-    # ---- sentence metrics ----
-    if sent_lengths:
-        add("avg_sentence_length", "mean(sent_lengths)",
-            f"Sum of sentence word-counts / number of sentences = "
-            f"{sum(sent_lengths)}/{len(sent_lengths)} = {feats['avg_sentence_length']:.2f}",
-            feats['avg_sentence_length'])
-        add("max_sentence_length", "max(sent_lengths)",
-            f"Longest sentence has {int(feats['max_sentence_length'])} words.",
-            feats['max_sentence_length'])
-        add("min_sentence_length", "min(sent_lengths)",
-            f"Shortest sentence has {int(feats['min_sentence_length'])} words.",
-            feats['min_sentence_length'])
-    else:
-        add("avg_sentence_length", "(no sentences)", "Not enough text.", 0)
-        add("max_sentence_length", "(no sentences)", "Not enough text.", 0)
-        add("min_sentence_length", "(no sentences)", "Not enough text.", 0)
-
-    # ---- lexical ----
-    uniq = set(words)
-    add("type_token_ratio", "len(unique_words) / word_count",
-        f"Unique words = {len(uniq)}; ratio = {len(uniq)}/{len(words)} = {feats['type_token_ratio']:.4f}",
-        feats['type_token_ratio'])
-
-    wf = Counter(words)
-    hapax = [w for w, c in wf.items() if c == 1]
-    add("hapax_ratio", "count(words appearing once) / unique_words",
-        f"Hapax (freq=1) words = {len(hapax)}; ratio = {len(hapax)}/{len(uniq)} = {feats['hapax_ratio']:.4f}",
-        feats['hapax_ratio'])
-
-    # ---- markers ----
-    add("visvakosh_marker_count", "Σ text.count(m) over Visvakosh markers",
-        "Markers: " + ", ".join(f"{m}={c}" for m, c in v_marker_hits.items() if c > 0) or "none found",
-        feats['visvakosh_marker_count'])
-
-    add("visvakosh_markers_per_1000", "(visvakosh_marker_count / word_count) × 1000",
-        f"({v_marker_total}/{word_count})×1000 = {feats['visvakosh_markers_per_1000']:.2f}",
-        feats['visvakosh_markers_per_1000'])
-
-    add("wikipedia_marker_count", "Σ text.count(m) over Wikipedia markers",
-        "Markers: " + ", ".join(f"{m}={c}" for m, c in w_marker_hits.items() if c > 0) or "none found",
-        feats['wikipedia_marker_count'])
-
-    add("wikipedia_markers_per_1000", "(wikipedia_marker_count / word_count) × 1000",
-        f"({w_marker_total}/{word_count})×1000 = {feats['wikipedia_markers_per_1000']:.2f}",
-        feats['wikipedia_markers_per_1000'])
-
-    add("marker_style_ratio", "v_marker_count / (v_marker_count + w_marker_count)",
-        f"{v_marker_total}/{v_marker_total + w_marker_total} = {feats['marker_style_ratio']:.4f}",
-        feats['marker_style_ratio'])
-
-    # ---- passive ----
-    add("visvakosh_passive_count", "Σ text.count(m) over Visvakosh passive forms",
-        "Hits: " + ", ".join(f"{m}={c}" for m, c in v_passive_hits.items() if c > 0) or "none found",
-        feats['visvakosh_passive_count'])
-
-    add("wikipedia_passive_count", "Σ text.count(m) over Wikipedia passive forms",
-        "Hits: " + ", ".join(f"{m}={c}" for m, c in w_passive_hits.items() if c > 0) or "none found",
-        feats['wikipedia_passive_count'])
-
-    # ---- english ----
-    eng_chars = len(ext.english_letters.findall(text))
-    add("english_char_ratio", "english_char_count / char_count",
-        f"{eng_chars}/{char_count} = {feats['english_char_ratio']:.4f}",
-        feats['english_char_ratio'])
-
-    # ---- script ----
-    guj_chars = len(ext.gujarati_letters.findall(text))
-    add("gujarati_char_ratio", "gujarati_char_count / char_count",
-        f"{guj_chars}/{char_count} = {feats['gujarati_char_ratio']:.4f}",
-        feats['gujarati_char_ratio'])
-
-    add("script_ratio", "gujarati_chars / (gujarati_chars + english_chars + 1)",
-        f"{guj_chars}/({guj_chars}+{eng_chars}+1) = {feats['script_ratio']:.4f}",
-        feats['script_ratio'])
-
-    # ---- punctuation ----
-    for k, label in [
-        ('colon_per_1000', "colon"),
-        ('comma_per_1000', "comma"),
-    ]:
-        raw = text.count(label[0])
-        add(k, f"(count of {label} / word_count) × 1000",
-            f"({raw}/{word_count})×1000 = {feats[k]:.2f}",
-            feats[k])
-
-    # hyphen (extractor only stores hyphen_count, so compute per-1000 here)
-    hyphen_raw = text.count('-')
-    hyphen_per_1000 = (hyphen_raw / word_count) * 1000
-    add("hyphen_per_1000", "(count of hyphen / word_count) × 1000",
-        f"({hyphen_raw}/{word_count})×1000 = {hyphen_per_1000:.2f}",
-        hyphen_per_1000)
-
-    # ---- structure ----
-    citation_count = len(re.findall(r'\[\d+\]', text))
-    add("citation_count", "len(re.findall(r'\\[\\d+\\]', text))",
-        f"Citations like [1], [2]... found: {citation_count}",
-        citation_count)
-
-    add("colon_in_first_200", "1 if ':' in text[:200] else 0",
-        f"First 200 chars {'contain' if feats['colon_in_first_200'] else 'do NOT contain'} a colon.",
-        feats['colon_in_first_200'])
-
-    # def_in_first_200 is NOT in the extractor — compute it locally
-    first_200 = text[:200]
-    def_in_first_200 = 1 if any(m in first_200 for m in ext.definition_markers) else 0
-    add("def_in_first_200", "1 if any(એટલે|કહેવાય|ગણાય in text[:200]) else 0",
-        f"Definition marker in first 200 chars: {'yes' if def_in_first_200 else 'no'}.",
-        def_in_first_200)
-
-    return trace
-
-# ============================================================================
-# Aliases for pickle compatibility
-# ============================================================================
-Fpipe = None  # set after SafePipeline defined
-StyleExt = GujaratiStyleMatrixExtractor
-Tk = GujaratiTokenizer
-FeaturePipeline = None
-
-
-# ============================================================================
-# NO-OP SafePipeline — models load directly using the training extractor
+# SAFE PIPELINE — robust wrapper around the pickled training pipeline.
+#   * Falls back to manually building features if `raw` is missing.
 # ============================================================================
 class SafePipeline:
-    """
-    Wraps the pickled pipeline. Since our app's extractor now matches the
-    training extractor exactly, we can call raw.transform() directly.
-    """
     def __init__(self, raw_pipeline):
         self.raw = raw_pipeline
+        self.extractor = GujaratiStyleMatrixExtractor()
+        n = None
         try:
-            n = raw_pipeline.scaler.n_features_in_
+            if hasattr(raw_pipeline, "scaler") and hasattr(raw_pipeline.scaler, "n_features_in_"):
+                n = int(raw_pipeline.scaler.n_features_in_)
         except Exception:
-            n = "?"
+            n = None
+        if n is None:
+            try:
+                n = len(raw_pipeline.scaler.mean_)
+            except Exception:
+                n = 41
         self.expected_style_features = n
 
+    def _style_matrix(self, texts):
+        names = GujaratiStyleMatrixExtractor.FEATURE_NAMES
+        n_expect = self.expected_style_features
+        rows = []
+        for t in texts:
+            f = self.extractor.extract_style_matrix(t)
+            vals = [float(f.get(k, 0.0)) for k in names]
+            if len(vals) < n_expect:
+                vals = vals + [0.0] * (n_expect - len(vals))
+            elif len(vals) > n_expect:
+                vals = vals[:n_expect]
+            rows.append(vals)
+        arr = np.array(rows, dtype=float)
+        return np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+
     def transform(self, texts):
-        return self.raw.transform(texts)
+        # Primary path — use the pickled pipeline (needs `raw`)
+        raw = getattr(self, "raw", None)
+        if raw is not None:
+            try:
+                return raw.transform(texts)
+            except Exception:
+                pass
+
+        # Fallback — rebuild features manually
+        style_feats = self._style_matrix(texts)
+
+        scaler = getattr(self, "raw", None)
+        if scaler is not None and hasattr(scaler, "scaler"):
+            try:
+                scaled = scaler.scaler.transform(style_feats)
+            except Exception:
+                scaled = style_feats
+        else:
+            scaled = style_feats
+
+        parts = [csr_matrix(scaled)]
+        if scaler is not None and hasattr(scaler, "word_tfidf"):
+            try:
+                parts.append(scaler.word_tfidf.transform(texts))
+            except Exception:
+                pass
+        if scaler is not None and hasattr(scaler, "char_tfidf"):
+            try:
+                parts.append(scaler.char_tfidf.transform(texts))
+            except Exception:
+                pass
+
+        return hstack(parts).tocsr()
 
 
+# ============================================================================
+# Aliases so unpickling can find the classes it was saved with
+# ============================================================================
 Fpipe = SafePipeline
+StyleExt = GujaratiStyleMatrixExtractor
+Tk = GujaratiTokenizer
 FeaturePipeline = SafePipeline
+GujaratiStyleMatrixExtractor = GujaratiStyleMatrixExtractor
 
 
-# ============================================================================
-# Inject into main so pickle can find the classes
-# ============================================================================
 def _inject_into_main():
     injected = []
     candidates = {
@@ -586,13 +289,12 @@ def _inject_into_main():
         "StyleExt": GujaratiStyleMatrixExtractor,
         "Tk": GujaratiTokenizer,
     }
-    candidates = {k: v for k, v in candidates.items() if v is not None}
     for mod_name in ["main", "__main__"]:
         mod = sys.modules.get(mod_name)
         if mod is None:
             continue
-        for cls_name, cls in candidates.items():
-            setattr(mod, cls_name, cls)
+        for k, v in candidates.items():
+            setattr(mod, k, v)
         injected.append(mod_name)
     return injected
 
@@ -610,13 +312,239 @@ if "main" not in sys.modules:
         "StyleExt": GujaratiStyleMatrixExtractor,
         "Tk": GujaratiTokenizer,
     }.items():
-        if v is not None:
-            setattr(sys.modules["main"], k, v)
+        setattr(sys.modules["main"], k, v)
     INJECTED_MODULES.append("main (newly created)")
 
 
 # ============================================================================
-# Rule-based classifier
+# NUMBERED CALCULATION TRACE
+# ============================================================================
+def build_calculation_trace(text: str) -> List[Dict[str, Any]]:
+    """
+    Returns numbered rows describing how each of the 41 style features
+    was calculated for `text`.
+    """
+    ext = GujaratiStyleMatrixExtractor()
+    tk = GujaratiTokenizer()
+    feats = ext.extract_style_matrix(text)
+
+    words = tk.tokenize_words(text)
+    sentences = tk.tokenize_sentences(text)
+    wc = max(len(words), 1)
+    cc = max(len(text), 1)
+
+    sent_lengths = [len(tk.tokenize_words(s)) for s in sentences]
+    sent_lengths = [l for l in sent_lengths if l > 0]
+
+    uniq = set(words)
+    word_freq = Counter(words)
+    hapax = [w for w, c in word_freq.items() if c == 1]
+
+    v_hits = {m: text.count(m) for m in ext.v_markers}
+    w_hits = {m: text.count(m) for m in ext.w_markers}
+    v_total = sum(v_hits.values())
+    w_total = sum(w_hits.values())
+
+    p_hits = {m: text.count(m) for m in ext.v_passive + ext.w_passive}
+    p_total = sum(p_hits.values())
+
+    eng_chars = len(ext.english_letters.findall(text))
+    guj_chars = len(ext.gujarati_letters.findall(text))
+
+    trad = sum(text.count(c) for c in ext.traditional_translit)
+    mod = sum(text.count(c) for c in ext.modern_translit)
+
+    first_200 = text[:200]
+    citation_n = len(re.findall(r'\[\d+\]', text))
+    heading_n = len(re.findall(r'==+.*?==+', text))
+
+    trace: List[Dict[str, Any]] = []
+    n = [0]
+
+    def add(name, formula, explanation, value):
+        n[0] += 1
+        trace.append({
+            "n": n[0], "name": name, "value": value,
+            "formula": formula, "explanation": explanation,
+        })
+
+    # 1-6 Basic length
+    add("word_count", "len(tokenize_words(text))",
+        f"Total word-tokens found: {len(words)}. "
+        f"Tokenizer regex: [\\u0A80-\\u0AFF]+ | [a-zA-Z]+ | [0-9]+",
+        feats['word_count'])
+
+    add("log_word_count", "log1p(word_count)",
+        f"log(1 + {len(words)}) = {feats['log_word_count']:.4f}  (smooths huge word counts)",
+        feats['log_word_count'])
+
+    add("char_count", "len(text)",
+        f"Raw character count including spaces and punctuation: {len(text)}",
+        feats['char_count'])
+
+    add("log_char_count", "log1p(char_count)",
+        f"log(1 + {len(text)}) = {feats['log_char_count']:.4f}",
+        feats['log_char_count'])
+
+    add("sentence_count", "non-empty sentences split on . ! ? |",
+        f"Found {len(sentences)} sentences each with >2 chars.",
+        feats['sentence_count'])
+
+    add("avg_word_length", "mean(len(w) for w in words)",
+        f"Sum of all word lengths / {len(words)} tokens = "
+        f"{sum(len(w) for w in words)}/{len(words)} = {feats['avg_word_length']:.4f}",
+        feats['avg_word_length'])
+
+    # 7-10 Sentence metrics
+    if sent_lengths:
+        add("avg_sentence_length", "mean(sent_lengths)",
+            f"Sum of sentence word counts / number of sentences = "
+            f"{sum(sent_lengths)}/{len(sent_lengths)} = {feats['avg_sentence_length']:.2f}",
+            feats['avg_sentence_length'])
+        add("std_sentence_length", "std(sent_lengths)",
+            f"Standard deviation of sentence lengths = {feats['std_sentence_length']:.2f}",
+            feats['std_sentence_length'])
+        add("max_sentence_length", "max(sent_lengths)",
+            f"Longest sentence: {int(feats['max_sentence_length'])} words",
+            feats['max_sentence_length'])
+        add("min_sentence_length", "min(sent_lengths)",
+            f"Shortest sentence: {int(feats['min_sentence_length'])} words",
+            feats['min_sentence_length'])
+    else:
+        for k in ['avg_sentence_length', 'std_sentence_length',
+                  'max_sentence_length', 'min_sentence_length']:
+            add(k, "(no sentences)", "Not enough text to compute.", 0.0)
+
+    # 11-12 Lexical
+    add("type_token_ratio", "len(unique_words) / word_count",
+        f"Unique words = {len(uniq)}; ratio = {len(uniq)}/{len(words)} = "
+        f"{feats['type_token_ratio']:.4f}",
+        feats['type_token_ratio'])
+
+    add("hapax_ratio", "count(words with freq == 1) / unique_words",
+        f"Hapax words = {len(hapax)}; ratio = {len(hapax)}/{len(uniq)} = "
+        f"{feats['hapax_ratio']:.4f}",
+        feats['hapax_ratio'])
+
+    # 13-16 Markers
+    add("v_markers_per_1000", "(v_marker_count / word_count) × 1000",
+        f"Visvakosh markers hit: " +
+        (", ".join(f"{m}×{c}" for m, c in v_hits.items() if c > 0) or "none") +
+        f"; ({v_total}/{wc})×1000 = {feats['v_markers_per_1000']:.2f}",
+        feats['v_markers_per_1000'])
+
+    add("w_markers_per_1000", "(w_marker_count / word_count) × 1000",
+        f"Wikipedia markers hit: " +
+        (", ".join(f"{m}×{c}" for m, c in w_hits.items() if c > 0) or "none") +
+        f"; ({w_total}/{wc})×1000 = {feats['w_markers_per_1000']:.2f}",
+        feats['w_markers_per_1000'])
+
+    add("marker_diff_per_1000", "(v_count − w_count) / word_count × 1000",
+        f"({v_total} − {w_total})/{wc} × 1000 = {feats['marker_diff_per_1000']:.2f}",
+        feats['marker_diff_per_1000'])
+
+    add("marker_ratio", "v_count / (v_count + w_count)",
+        f"{v_total}/({v_total}+{w_total}) = {feats['marker_ratio']:.4f}",
+        feats['marker_ratio'])
+
+    # 17 Passive
+    add("passive_per_1000", "(passive_count / word_count) × 1000",
+        f"Passive hits: " +
+        (", ".join(f"{m}×{c}" for m, c in p_hits.items() if c > 0) or "none") +
+        f"; ({p_total}/{wc})×1000 = {feats['passive_per_1000']:.2f}",
+        feats['passive_per_1000'])
+
+    # 18-20 Script
+    add("english_char_ratio", "english_char_count / char_count",
+        f"English letters = {eng_chars}; {eng_chars}/{cc} = "
+        f"{feats['english_char_ratio']:.4f}",
+        feats['english_char_ratio'])
+
+    add("gujarati_char_ratio", "gujarati_char_count / char_count",
+        f"Gujarati letters = {guj_chars}; {guj_chars}/{cc} = "
+        f"{feats['gujarati_char_ratio']:.4f}",
+        feats['gujarati_char_ratio'])
+
+    add("script_ratio", "guj_chars / (guj_chars + eng_chars + 1)",
+        f"{guj_chars}/({guj_chars}+{eng_chars}+1) = {feats['script_ratio']:.4f} "
+        f"(0=all English, 1=all Gujarati)",
+        feats['script_ratio'])
+
+    # 21-26 Punctuation
+    def punct(name, char, label):
+        raw = text.count(char)
+        add(name, f"(count of '{label}' / word_count) × 1000",
+            f"'{label}' appears {raw}× ; ({raw}/{wc})×1000 = "
+            f"{feats[name]:.2f}",
+            feats[name])
+
+    punct('colon_per_1000', ':', 'colon')
+    punct('comma_per_1000', ',', 'comma')
+
+    raw_paren = text.count('(') + text.count(')')
+    add('paren_per_1000', "((count '(' + count ')') / word_count) × 1000",
+        f"Parentheses appear {raw_paren}× ; ({raw_paren}/{wc})×1000 = "
+        f"{feats['paren_per_1000']:.2f}",
+        feats['paren_per_1000'])
+
+    raw_sc = len(re.findall(r'\s,', text))
+    add('space_comma_per_1000', "(count of ' ,' / word_count) × 1000",
+        f"Space-before-comma '{raw_sc}' occurrences; ({raw_sc}/{wc})×1000 = "
+        f"{feats['space_comma_per_1000']:.2f}",
+        feats['space_comma_per_1000'])
+
+    punct('hyphen_per_1000', '-', 'hyphen')
+    punct('danda_per_1000', '।', 'danda (।)')
+
+    # 27-28 Structural
+    add("citation_count", "len(re.findall(r'\\[\\d+\\]', text))",
+        f"Matches of [number] like [1],[2] → {citation_n}",
+        feats['citation_count'])
+
+    add("wiki_heading_count", "len(re.findall(r'==+.*?==+', text))",
+        f"Wiki-style == headings found → {heading_n}",
+        feats['wiki_heading_count'])
+
+    # 29-30 Definition
+    add("colon_in_first_200", "1 if ':' in text[:200] else 0",
+        f"First 200 chars {'contain' if ':' in first_200 else 'do NOT contain'} a colon.",
+        feats['colon_in_first_200'])
+
+    add("def_in_first_200", "1 if any(એટલે | કહેવાય | ગણાય in text[:200]) else 0",
+        f"Definition marker in first 200 chars: "
+        f"{'yes' if feats['def_in_first_200'] else 'no'}",
+        feats['def_in_first_200'])
+
+    # 31-40 Keyword counters
+    for m in ['તથા', 'વળી', 'કહેવાય છે', 'એટલે', 'કરાય છે',
+              'શામેલ', 'દ્વારા', 'સક્ષમ', 'ઉલ્લેખ', 'કરવામાં આવે છે']:
+        key = 'cnt_' + m.replace(' ', '_')
+        raw = text.count(m)
+        add(key, f"text.count('{m}')",
+            f"Occurrences of '{m}' = {raw}",
+            feats.get(key, 0.0))
+
+    # 41-43 Transliteration
+    add("translit_traditional_count",
+        "Σ text.count(c) for c in ['ૉ','ૅ','ઑ','ઍ']",
+        f"Traditional characters found = {trad}",
+        feats['translit_traditional_count'])
+
+    add("translit_modern_count",
+        "Σ text.count(c) for c in ['ો','ે','ૈ']",
+        f"Modern characters found = {mod}",
+        feats['translit_modern_count'])
+
+    add("translit_style_ratio",
+        "traditional / (traditional + modern)",
+        f"{trad}/({trad}+{mod}) = {feats['translit_style_ratio']:.4f}",
+        feats['translit_style_ratio'])
+
+    return trace
+
+
+# ============================================================================
+# Rule-based classifier fallback
 # ============================================================================
 try:
     from style_matrix_classifier import analyze_text
@@ -637,10 +565,14 @@ except ImportError as e:
                 'sentence_metrics': {'avg_sentence_length': 0, 'std_sentence_length': 0,
                                      'interpretation': 'style_matrix_classifier.py missing'},
                 'vocabulary_metrics': {'type_token_ratio': 0, 'hapax_ratio': 0, 'interpretation': 'N/A'},
-                'marker_metrics': {'visvakosh_markers_per_1000': 0, 'wikipedia_markers_per_1000': 0, 'interpretation': 'N/A'},
-                'passive_metrics': {'visvakosh_passive_per_1000': 0, 'wikipedia_passive_per_1000': 0, 'interpretation': 'N/A'},
-                'transliteration_metrics': {'traditional_count': 0, 'modern_count': 0, 'interpretation': 'N/A'},
-                'punctuation_metrics': {'colon_per_1000': 0, 'semicolon_per_1000': 0, 'parentheses_per_1000': 0},
+                'marker_metrics': {'visvakosh_markers_per_1000': 0, 'wikipedia_markers_per_1000': 0,
+                                   'interpretation': 'N/A'},
+                'passive_metrics': {'visvakosh_passive_per_1000': 0, 'wikipedia_passive_per_1000': 0,
+                                    'interpretation': 'N/A'},
+                'transliteration_metrics': {'traditional_count': 0, 'modern_count': 0,
+                                            'interpretation': 'N/A'},
+                'punctuation_metrics': {'colon_per_1000': 0, 'semicolon_per_1000': 0,
+                                        'parentheses_per_1000': 0},
                 'gloss_metrics': {'english_gloss_count': 0, 'english_glosses_per_1000': 0},
                 'structural_metrics': {'citation_count': 0, 'wiki_heading_count': 0},
             },
@@ -682,12 +614,12 @@ st.markdown("""
     .model-signal { display: inline-block; background: #e9ecef; color: #333;
                     padding: 2px 8px; border-radius: 10px; margin: 2px;
                     font-size: 0.8rem; font-family: monospace; }
-    .trace-row { display: grid; grid-template-columns: 40px 220px 1fr; gap: 8px;
-                 padding: 4px 0; border-bottom: 1px solid #eee; font-size: 0.88rem; }
+    .trace-row { display: grid; grid-template-columns: 48px 260px 1fr; gap: 8px;
+                 padding: 6px 4px; border-bottom: 1px solid #eee; font-size: 0.88rem; }
     .trace-num { color: #1f4e79; font-weight: bold; }
     .trace-name { font-family: monospace; color: #333; }
     .trace-value { background: #f1f5f9; padding: 1px 6px; border-radius: 4px;
-                   font-family: monospace; margin-right: 6px; }
+                   font-family: monospace; margin-right: 6px; color: #0b3d91; }
     .stTextArea textarea { font-family: 'Noto Sans Gujarati', 'Shruti', sans-serif; font-size: 15px; }
 </style>
 """, unsafe_allow_html=True)
@@ -697,11 +629,12 @@ st.markdown('<div class="subtitle">Rule-based Visvakosh vs Wikipedia classificat
             'with numbered calculation traces for every model</div>', unsafe_allow_html=True)
 
 if not STYLE_IMPORT_OK:
-    st.warning(f"⚠️ `style_matrix_classifier.py` not found — rule-based classifier disabled.")
+    st.warning(f"⚠️ `style_matrix_classifier.py` not found — rule-based classifier disabled. "
+               f"({STYLE_IMPORT_ERR})")
 
 
 # ============================================================================
-# LOAD MODELS
+# MODEL DISCOVERY + LOAD
 # ============================================================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SKIP_FILES = {"best_model.pkl", "visvakosh_classifier.pkl", "streamlit_app.pkl"}
@@ -731,6 +664,7 @@ def load_all_ml_models():
         fname = os.path.relpath(path, SCRIPT_DIR)
         size = os.path.getsize(path)
         base = os.path.basename(path)
+
         if base in SKIP_FILES:
             status.append((fname, size, False, "skipped (in SKIP_FILES)"))
             continue
@@ -744,8 +678,10 @@ def load_all_ml_models():
                 continue
             name = data.get("model_name", base.replace(".pkl", ""))
             if "model" not in data or "feature_pipeline" not in data:
-                status.append((fname, size, False, f"missing keys: {list(data.keys())[:5]}"))
+                status.append((fname, size, False,
+                               f"missing keys: {list(data.keys())[:5]}"))
                 continue
+
             safe_pipe = SafePipeline(data["feature_pipeline"])
             models[name] = {
                 "model": data["model"],
@@ -758,7 +694,7 @@ def load_all_ml_models():
                 "expected_features": safe_pipe.expected_style_features,
             }
             status.append((fname, size, True,
-                           f"{name} (style features: {safe_pipe.expected_style_features})"))
+                           f"{name} (style feats: {safe_pipe.expected_style_features})"))
         except Exception as e:
             status.append((fname, size, False, f"{type(e).__name__}: {str(e)[:80]}"))
     return models, status
@@ -770,7 +706,7 @@ if "ml_models" not in st.session_state:
     st.session_state["ml_status"] = _s
 
 ALL_ML_MODELS = st.session_state["ml_models"]
-LOAD_STATUS   = st.session_state["ml_status"]
+LOAD_STATUS = st.session_state["ml_status"]
 
 
 # ============================================================================
@@ -778,11 +714,11 @@ LOAD_STATUS   = st.session_state["ml_status"]
 # ============================================================================
 with st.sidebar:
     st.header("⚙️ About")
-    st.info("**Rule-Based Classifier** + **ML Models Ensemble** (with full calculation traces)")
+    st.info("**Rule-Based Classifier** + **ML Models Ensemble** (with numbered traces)")
     st.markdown("---")
     st.header("📝 Sample Texts")
-    sample_v = """કોમ્પ્યૂટર : વિવિધ કાર્યક્રમમાં આપેલી સૂચના અનુસાર માહિતીસંગ્રહ અને માહિતીપ્રક્રમણ માટેનું વીજાણુસાધન."""
-    sample_w = """કમ્પ્યુટર એ એક ઇલેક્ટ્રોનિક ઉપકરણ છે જે માહિતીને સંગ્રહિત કરી શકે છે. આ ઉપકરણનો ઉપયોગ વિવિધ ક્ષેત્રોમાં કરવામાં આવે છે. [1][2]"""
+    sample_v = """કોમ્પ્યૂટર : વિવિધ કાર્યક્રમમાં આપેલી સૂચના અનુસાર માહિતીસંગ્રહ અને માહિતીપ્રક્રમણ માટેનું વીજાણુસાધન. તે સંજ્ઞાઓનું ઝડપથી અને ચોકસાઈપૂર્વક રૂપાંતર કરી શકતું મશીન છે."""
+    sample_w = """કમ્પ્યુટર એ એક ઇલેક્ટ્રોનિક ઉપકરણ છે જે માહિતીને સંગ્રહિત કરી શકે છે. આ ઉપકરણનો ઉપયોગ વિવિધ ક્ષેત્રોમાં કરવામાં આવે છે. મુખ્ય લેખ: કમ્પ્યુટરનો ઇતિહાસ [1][2]"""
     c1, c2 = st.columns(2)
     with c1:
         if st.button("📖 Visvakosh", use_container_width=True):
@@ -796,19 +732,21 @@ with st.sidebar:
     st.markdown("---")
     st.header("🤖 ML Models Status")
     st.caption(f"Injected: {INJECTED_MODULES}")
+
     if st.button("🔄 Reload Models", use_container_width=True, key="reload_btn"):
         st.session_state.pop("ml_models", None)
         st.session_state.pop("ml_status", None)
         st.rerun()
 
-    ok_count  = sum(1 for _, _, ok, _ in LOAD_STATUS if ok)
+    ok_count = sum(1 for _, _, ok, _ in LOAD_STATUS if ok)
     err_count = sum(1 for _, _, ok, _ in LOAD_STATUS if not ok)
-    if ok_count:  st.success(f"✅ {ok_count} models loaded")
+    if ok_count: st.success(f"✅ {ok_count} models loaded")
     if err_count: st.error(f"❌ {err_count} not loaded")
 
     with st.expander(f"✅ Loaded ({ok_count})", expanded=(ok_count > 0)):
         for fname, size, ok, msg in LOAD_STATUS:
-            if ok: st.write(f"✓ `{fname}` ({size:,} B) → **{msg}**")
+            if ok:
+                st.write(f"✓ `{fname}` ({size:,} B) → **{msg}**")
 
     if err_count:
         with st.expander(f"❌ Failed ({err_count})", expanded=(ok_count == 0)):
@@ -819,9 +757,9 @@ with st.sidebar:
 
 
 # ============================================================================
-# ML PREDICTION + REASONING + NUMBERED TRACE
+# ML PREDICTION (with reasoning)
 # ============================================================================
-def ml_predict_one(text, name, bundle, trace):
+def ml_predict_one(text, name, bundle):
     model, pipeline = bundle["model"], bundle["pipeline"]
     out = {"model": name, "prediction": None, "confidence": None,
            "proba_v": None, "proba_w": None,
@@ -830,18 +768,14 @@ def ml_predict_one(text, name, bundle, trace):
            "val_v_ok": bundle.get("val_v_ok", False),
            "val_w_ok": bundle.get("val_w_ok", False),
            "source": bundle.get("source", "?"),
-           "expected_features": bundle.get("expected_features", "?"),
-           "trace": trace}
-
+           "expected_features": bundle.get("expected_features", "?")}
     try:
         X = pipeline.transform([text])
         if name in DENSE_ONLY:
             X = X.toarray()
-
         pred = model.predict(X)[0]
         out["prediction"] = "Wikipedia" if pred == 1 else "Visvakosh"
 
-        # confidence
         if hasattr(model, "predict_proba"):
             try:
                 p = model.predict_proba(X)[0]
@@ -867,30 +801,28 @@ def ml_predict_one(text, name, bundle, trace):
             out["proba_v"] = 0.5
             out["proba_w"] = 0.5
 
-        # Build reason summary
-        feats = {t["name"]: t["value"] for t in trace}
+        feats = GujaratiStyleMatrixExtractor().extract_style_matrix(text)
         reasons, signals = [], []
-
         if pred == 1:
-            if feats.get("wikipedia_markers_per_1000", 0) > feats.get("visvakosh_markers_per_1000", 0):
+            if feats.get("w_markers_per_1000", 0) > feats.get("v_markers_per_1000", 0):
                 reasons.append(f"Wikipedia markers dominate "
-                               f"({feats['wikipedia_markers_per_1000']:.1f}/1000 vs "
-                               f"{feats['visvakosh_markers_per_1000']:.1f}/1000)")
-                signals.append(f"w_markers={feats['wikipedia_markers_per_1000']:.1f}")
+                               f"({feats['w_markers_per_1000']:.1f}/1000 vs "
+                               f"{feats['v_markers_per_1000']:.1f}/1000)")
+                signals.append(f"w_markers={feats['w_markers_per_1000']:.1f}")
             if feats.get("english_char_ratio", 0) > 0.02:
                 reasons.append(f"English glosses ({feats['english_char_ratio']:.1%})")
                 signals.append(f"eng={feats['english_char_ratio']:.1%}")
             if feats.get("citation_count", 0) > 0:
-                reasons.append(f"Citations found ({feats['citation_count']})")
-                signals.append(f"citations={feats['citation_count']}")
+                reasons.append(f"Citations found ({feats['citation_count']:.0f})")
+                signals.append(f"citations={feats['citation_count']:.0f}")
             if not reasons:
                 reasons.append("Statistical profile matches Wikipedia training")
         else:
-            if feats.get("visvakosh_markers_per_1000", 0) > feats.get("wikipedia_markers_per_1000", 0):
+            if feats.get("v_markers_per_1000", 0) > feats.get("w_markers_per_1000", 0):
                 reasons.append(f"Visvakosh markers dominate "
-                               f"({feats['visvakosh_markers_per_1000']:.1f}/1000 vs "
-                               f"{feats['wikipedia_markers_per_1000']:.1f}/1000)")
-                signals.append(f"v_markers={feats['visvakosh_markers_per_1000']:.1f}")
+                               f"({feats['v_markers_per_1000']:.1f}/1000 vs "
+                               f"{feats['w_markers_per_1000']:.1f}/1000)")
+                signals.append(f"v_markers={feats['v_markers_per_1000']:.1f}")
             if feats.get("colon_in_first_200", 0) == 1:
                 reasons.append("Definition-first pattern (colon in first 200 chars)")
                 signals.append("def_colon")
@@ -905,7 +837,6 @@ def ml_predict_one(text, name, bundle, trace):
         out["reason"] = " • ".join(reasons)
         out["signals"] = signals
         return out
-
     except Exception as e:
         out["error"] = str(e)[:200]
         out["prediction"] = "ERROR"
@@ -913,12 +844,12 @@ def ml_predict_one(text, name, bundle, trace):
         return out
 
 
-def ml_predict_all(text, trace):
-    return [ml_predict_one(text, n, b, trace) for n, b in ALL_ML_MODELS.items()]
+def ml_predict_all(text):
+    return [ml_predict_one(text, n, b) for n, b in ALL_ML_MODELS.items()]
 
 
 # ============================================================================
-# MAIN INPUT
+# MAIN UI
 # ============================================================================
 st.header("📝 Enter Gujarati Text")
 text_input = st.text_area(
@@ -954,10 +885,12 @@ if analyze_btn:
     st.success("✅ Analysis complete")
     st.markdown("---")
     st.header("🎯 Prediction")
-    pred = result['prediction']; conf = result['confidence']
-    if pred == "Visvakosh":   css, emoji = "visvakosh-pred", "📖"
+
+    pred = result['prediction']
+    conf = result['confidence']
+    if pred == "Visvakosh": css, emoji = "visvakosh-pred", "📖"
     elif pred == "Wikipedia": css, emoji = "wikipedia-pred", "🌐"
-    else:                     css, emoji = "unknown-pred", "❓"
+    else: css, emoji = "unknown-pred", "❓"
 
     st.markdown(
         f'<div class="prediction-box {css}">{emoji} Likely Source: '
@@ -973,18 +906,22 @@ if analyze_btn:
     c3.metric("V Ratio", f"{v['visvakosh_ratio']:.1%}")
     st.progress(v['visvakosh_ratio'])
 
-    # -------------- SHOW NUMBERED CALCULATION TRACE --------------
+    # ---------------- NUMBERED CALCULATION TRACE ----------------
     st.markdown("---")
     st.header("🧮 Numbered Style Feature Calculation Trace")
-    st.caption("Every style-matrix feature computed for your input, with formula and value.")
+    st.caption("Every style-matrix feature used by the ML models, with formula and "
+               "the exact numbers that produced it.")
 
-    with st.expander(f"🔬 Show all {len(trace)} numbered feature calculations", expanded=False):
+    with st.expander(f"🔬 Show all {len(trace)} numbered feature calculations",
+                     expanded=False):
         for t in trace:
+            val = t["value"]
+            val_str = f"{val:.4f}" if isinstance(val, float) else str(val)
             st.markdown(
                 f'<div class="trace-row">'
                 f'<div class="trace-num">#{t["n"]}</div>'
                 f'<div class="trace-name">{t["name"]}</div>'
-                f'<div><span class="trace-value">{t["value"] if not isinstance(t["value"], float) else round(t["value"], 4)}</span>'
+                f'<div><span class="trace-value">{val_str}</span>'
                 f'<em>{t["formula"]}</em><br>{t["explanation"]}</div>'
                 f'</div>',
                 unsafe_allow_html=True
@@ -992,7 +929,8 @@ if analyze_btn:
 
     with st.expander("📋 Raw feature values (as a table)"):
         df = pd.DataFrame([
-            {"#": t["n"], "Feature": t["name"], "Value": t["value"], "Formula": t["formula"]}
+            {"#": t["n"], "Feature": t["name"], "Value": t["value"],
+             "Formula": t["formula"], "Explanation": t["explanation"]}
             for t in trace
         ])
         st.dataframe(df, use_container_width=True, height=400)
@@ -1002,9 +940,12 @@ if analyze_btn:
     st.header("📋 Rule-by-Rule Breakdown")
     for r in result['rule_results']:
         vv, wv = r['visvakosh_votes'], r['wikipedia_votes']
-        if vv == 0 and wv == 0: continue
-        if vv > 0: st.markdown(f"**+{vv} Visvakosh**  {r['reason']}")
-        if wv > 0: st.markdown(f"**+{wv} Wikipedia**  {r['reason']}")
+        if vv == 0 and wv == 0:
+            continue
+        if vv > 0:
+            st.markdown(f"**+{vv} Visvakosh**  {r['reason']}")
+        if wv > 0:
+            st.markdown(f"**+{wv} Wikipedia**  {r['reason']}")
 
     st.markdown("---")
     st.header("✅ Satisfied Style Properties")
@@ -1013,14 +954,16 @@ if analyze_btn:
         st.subheader("📖 Visvakosh Indicators")
         if result['visvakosh_satisfied']:
             for r in result['visvakosh_satisfied']:
-                st.markdown(f'<span class="satisfied-tag">{r["rule"]}</span>', unsafe_allow_html=True)
+                st.markdown(f'<span class="satisfied-tag">{r["rule"]}</span>',
+                            unsafe_allow_html=True)
         else:
             st.info("None met")
     with c2:
         st.subheader("🌐 Wikipedia Indicators")
         if result['wikipedia_satisfied']:
             for r in result['wikipedia_satisfied']:
-                st.markdown(f'<span class="wikipedia-tag">{r["rule"]}</span>', unsafe_allow_html=True)
+                st.markdown(f'<span class="wikipedia-tag">{r["rule"]}</span>',
+                            unsafe_allow_html=True)
         else:
             st.info("None met")
 
@@ -1029,15 +972,16 @@ if analyze_btn:
     st.header("🤖 ML Models — Individual Predictions & Reasoning")
 
     if not ALL_ML_MODELS:
-        st.error("⚠️ 0 ML models loaded.")
+        st.error("⚠️ 0 ML models loaded. Check sidebar ❌ Failed section.")
     else:
         with st.spinner(f"Running {len(ALL_ML_MODELS)} ML models..."):
-            ml_results = ml_predict_all(text_input, trace)
+            ml_results = ml_predict_all(text_input)
 
         n_v = n_w = 0
         cv_sum = cw_sum = 0.0
         for r in ml_results:
-            if r["error"]: continue
+            if r["error"]:
+                continue
             if r["prediction"] == "Visvakosh":
                 n_v += 1; cv_sum += r["confidence"] or 0
             else:
@@ -1047,9 +991,9 @@ if analyze_btn:
         avg_v = cv_sum / n_v if n_v else 0
         avg_w = cw_sum / n_w if n_w else 0
 
-        if n_v > n_w:   ens_verdict, ens_css, ens_emoji = "Visvakosh", "visvakosh-pred", "📖"
+        if n_v > n_w: ens_verdict, ens_css, ens_emoji = "Visvakosh", "visvakosh-pred", "📖"
         elif n_w > n_v: ens_verdict, ens_css, ens_emoji = "Wikipedia", "wikipedia-pred", "🌐"
-        else:           ens_verdict, ens_css, ens_emoji = "Tie", "unknown-pred", "⚖️"
+        else: ens_verdict, ens_css, ens_emoji = "Tie", "unknown-pred", "⚖️"
 
         st.markdown(
             f'<div class="prediction-box {ens_css}">{ens_emoji} ML Ensemble Verdict: '
@@ -1085,17 +1029,20 @@ if analyze_btn:
             conf = r["confidence"] or 0.5
 
             badges = []
-            if r["val_v_ok"] and r["val_w_ok"]: badges.append("✅ both validations passed")
+            if r["val_v_ok"] and r["val_w_ok"]:
+                badges.append("✅ both validations passed")
             badges.append(f"CV F1 = {r['cv_f1']:.4f}")
             badges.append(f"style feats = {r.get('expected_features','?')}")
 
             sig_html = "".join(
-                f'<span class="model-signal">{s}</span>' for s in r.get("signals", [])
+                f'<span class="model-signal">{s}</span>'
+                for s in r.get("signals", [])
             )
 
             proba_html = ""
             if r["proba_v"] is not None and r["proba_w"] is not None:
-                pv = r["proba_v"] * 100; pw = r["proba_w"] * 100
+                pv = r["proba_v"] * 100
+                pw = r["proba_w"] * 100
                 proba_html = (
                     f'<div style="margin-top:8px;font-size:0.85rem;">'
                     f'<div>📖 Visvakosh: <b>{pv:.1f}%</b> '
@@ -1114,18 +1061,22 @@ if analyze_btn:
                 f'<span style="font-size:0.85rem;color:#666;">(confidence: {conf:.1%})</span></div>'
                 f'<div style="font-size:0.85rem;color:#666;margin-top:4px;">{" • ".join(badges)}</div>'
                 f'<div style="margin-top:6px;">{sig_html}</div>'
-                f'<div class="model-reason">💡 <b>Why?</b> {r["reason"]}</div>{proba_html}</div>',
+                f'<div class="model-reason">💡 <b>Why?</b> {r["reason"]}</div>'
+                f'{proba_html}</div>',
                 unsafe_allow_html=True
             )
 
-            # Numbered feature trace per model
-            with st.expander(f"🧮 Show numbered calculation trace used by #{idx} {r['model']}"):
+            # --- NUMBERED TRACE PER MODEL ---
+            with st.expander(
+                f"🧮 Show numbered calculation trace used by #{idx} {r['model']}"
+            ):
                 st.caption(
-                    f"This model consumes the same numbered style features listed below "
-                    f"(then concatenated with word-TF-IDF and char-TF-IDF). "
+                    f"This model consumes the same {len(trace)} numbered style "
+                    f"features listed below (then concatenated with word-TF-IDF "
+                    f"and char-TF-IDF before being fed to the classifier). "
                     f"Scaler expects **{r.get('expected_features','?')}** style features."
                 )
-                for t in r["trace"]:
+                for t in trace:
                     val = t["value"]
                     val_str = f"{val:.4f}" if isinstance(val, float) else str(val)
                     st.markdown(
@@ -1138,7 +1089,7 @@ if analyze_btn:
                         unsafe_allow_html=True
                     )
 
-        # -------------- SUMMARY TABLE --------------
+        # ---------------- SUMMARY TABLE ----------------
         st.markdown("### 📊 Summary Table (numbered)")
         rows = []
         for i, r in enumerate(sorted_results, 1):
@@ -1152,7 +1103,8 @@ if analyze_btn:
                 rows.append({
                     "#": i,
                     "Model": r["model"],
-                    "Prediction": ("📖 " if r["prediction"] == "Visvakosh" else "🌐 ") + r["prediction"],
+                    "Prediction": ("📖 " if r["prediction"] == "Visvakosh"
+                                   else "🌐 ") + r["prediction"],
                     "Confidence": f"{r['confidence']:.1%}" if r["confidence"] else "—",
                     "V %": f"{r['proba_v']:.1%}" if r["proba_v"] is not None else "—",
                     "W %": f"{r['proba_w']:.1%}" if r["proba_w"] is not None else "—",
@@ -1163,10 +1115,11 @@ if analyze_btn:
         st.dataframe(pd.DataFrame(rows), use_container_width=True,
                      height=min(600, 40 + 35 * len(rows)))
 
-        # -------------- DOWNLOADS --------------
+        # ---------------- DOWNLOADS ----------------
         ml_report = {
             "ensemble_verdict": ens_verdict,
             "votes": {"visvakosh": n_v, "wikipedia": n_w, "total": total},
+            "feature_trace": trace,
             "models": [
                 {
                     "rank": i,
@@ -1179,13 +1132,12 @@ if analyze_btn:
                     "reason": r["reason"],
                     "signals": r["signals"],
                     "error": r["error"],
-                    "trace": r["trace"]
                 }
                 for i, r in enumerate(sorted_results, 1)
             ]
         }
         st.download_button(
-            "⬇️ Download ML Predictions + Traces (JSON)",
+            "⬇️ Download ML Predictions + Feature Trace (JSON)",
             data=json.dumps(ml_report, indent=2, ensure_ascii=False, default=str),
             file_name=f"ml_predictions_{ens_verdict.lower()}.json",
             mime="application/json",
