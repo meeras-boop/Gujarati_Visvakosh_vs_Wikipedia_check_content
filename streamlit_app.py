@@ -506,28 +506,37 @@ def build_calculation_trace(text: str) -> List[Dict[str, Any]]:
     for k, label in [
         ('colon_per_1000', "colon"),
         ('comma_per_1000', "comma"),
-        ('hyphen_per_1000', "hyphen"),
     ]:
         raw = text.count(label[0])
         add(k, f"(count of {label} / word_count) × 1000",
             f"({raw}/{word_count})×1000 = {feats[k]:.2f}",
             feats[k])
 
+    # hyphen (extractor only stores hyphen_count, so compute per-1000 here)
+    hyphen_raw = text.count('-')
+    hyphen_per_1000 = (hyphen_raw / word_count) * 1000
+    add("hyphen_per_1000", "(count of hyphen / word_count) × 1000",
+        f"({hyphen_raw}/{word_count})×1000 = {hyphen_per_1000:.2f}",
+        hyphen_per_1000)
+
     # ---- structure ----
+    citation_count = len(re.findall(r'\[\d+\]', text))
     add("citation_count", "len(re.findall(r'\\[\\d+\\]', text))",
-        f"Citations like [1], [2]... found: {feats['citation_count']}",
-        feats['citation_count'])
+        f"Citations like [1], [2]... found: {citation_count}",
+        citation_count)
 
     add("colon_in_first_200", "1 if ':' in text[:200] else 0",
         f"First 200 chars {'contain' if feats['colon_in_first_200'] else 'do NOT contain'} a colon.",
         feats['colon_in_first_200'])
 
+    # def_in_first_200 is NOT in the extractor — compute it locally
+    first_200 = text[:200]
+    def_in_first_200 = 1 if any(m in first_200 for m in ext.definition_markers) else 0
     add("def_in_first_200", "1 if any(એટલે|કહેવાય|ગણાય in text[:200]) else 0",
-        f"Definition marker in first 200 chars: {'yes' if feats['def_in_first_200'] else 'no'}.",
-        feats['def_in_first_200'])
+        f"Definition marker in first 200 chars: {'yes' if def_in_first_200 else 'no'}.",
+        def_in_first_200)
 
     return trace
-
 
 # ============================================================================
 # Aliases for pickle compatibility
