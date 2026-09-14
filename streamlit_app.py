@@ -1,7 +1,6 @@
 # ============================================================================
 # streamlit_app.py — FULL CORRECTED VERSION
-# Auto-detects expected feature count; extracts 41 style features
-# Works with existing .pkl files. No retraining needed.
+# Fixes KeyError: 'FeaturePipeline' in _inject_into_main()
 # ============================================================================
 
 import warnings
@@ -85,7 +84,6 @@ class StyleMatrixExtractor:
         cc = len(text)
         sc = max(len(sentences), 1)
 
-        # ---------- 6 base features ----------
         feats = {
             'word_count': wc,
             'log_word_count': float(np.log1p(wc)),
@@ -95,7 +93,6 @@ class StyleMatrixExtractor:
             'avg_word_length': float(np.mean([len(w) for w in words])) if words else 0.0,
         }
 
-        # ---------- 4 sentence features ----------
         sl = [len(self.tk.words(s)) for s in sentences]
         sl = [l for l in sl if l > 0]
         feats['avg_sentence_length'] = float(np.mean(sl)) if sl else 0.0
@@ -103,12 +100,10 @@ class StyleMatrixExtractor:
         feats['max_sentence_length'] = float(max(sl)) if sl else 0.0
         feats['min_sentence_length'] = float(min(sl)) if sl else 0.0
 
-        # ---------- 3 lexical features ----------
         uniq = set(words)
         feats['type_token_ratio'] = len(uniq) / wc if wc > 0 else 0.0
         feats['hapax_ratio'] = sum(1 for c in Counter(words).values() if c == 1) / max(len(uniq), 1)
 
-        # ---------- 5 marker features ----------
         v_c = sum(text.count(m) for m in self.v_markers)
         w_c = sum(text.count(m) for m in self.w_markers)
         feats['v_markers_per_1000'] = (v_c / wc) * 1000 if wc > 0 else 0.0
@@ -116,20 +111,17 @@ class StyleMatrixExtractor:
         feats['marker_diff_per_1000'] = ((v_c - w_c) / wc) * 1000 if wc > 0 else 0.0
         feats['marker_ratio'] = v_c / (v_c + w_c) if (v_c + w_c) > 0 else 0.5
 
-        # ---------- 1 passive feature ----------
         passive_markers = ['થાય છે', 'થયું', 'થયા', 'થઈ', 'આવે છે', 'આવ્યું',
                            'બને છે', 'કરાય છે']
         p_c = sum(text.count(m) for m in passive_markers)
         feats['passive_per_1000'] = (p_c / wc) * 1000 if wc > 0 else 0.0
 
-        # ---------- 3 script features ----------
         eng_chars = len(re.findall(r'[a-zA-Z]', text))
         guj_chars = len(re.findall(r'[\u0A80-\u0AFF]', text))
         feats['english_char_ratio'] = eng_chars / cc if cc > 0 else 0.0
         feats['gujarati_char_ratio'] = guj_chars / cc if cc > 0 else 0.0
         feats['script_ratio'] = guj_chars / (guj_chars + eng_chars + 1)
 
-        # ---------- 6 punctuation features ----------
         feats['colon_per_1000'] = (text.count(':') / wc) * 1000 if wc > 0 else 0.0
         feats['comma_per_1000'] = (text.count(',') / wc) * 1000 if wc > 0 else 0.0
         feats['paren_per_1000'] = ((text.count('(') + text.count(')')) / wc) * 1000 if wc > 0 else 0.0
@@ -137,19 +129,16 @@ class StyleMatrixExtractor:
         feats['hyphen_per_1000'] = (text.count('-') / wc) * 1000 if wc > 0 else 0.0
         feats['danda_per_1000'] = (text.count('।') / wc) * 1000 if wc > 0 else 0.0
 
-        # ---------- 4 structural features ----------
         feats['citation_count'] = len(re.findall(r'\[\d+\]', text))
         feats['wiki_heading_count'] = len(re.findall(r'==+.*?==+', text))
         first_200 = text[:200]
         feats['colon_in_first_200'] = 1.0 if ':' in first_200 else 0.0
         feats['def_in_first_200'] = 1.0 if any(m in first_200 for m in ['એટલે', 'કહેવાય', 'ગણાય']) else 0.0
 
-        # ---------- 10 individual marker counts ----------
         for m in ['તથા', 'વળી', 'કહેવાય છે', 'એટલે', 'કરાય છે',
                   'શામેલ', 'દ્વારા', 'સક્ષમ', 'ઉલ્લેખ', 'કરવામાં આવે છે']:
             feats['cnt_' + m.replace(' ', '_')] = text.count(m)
 
-        # ---------- 3 transliteration features ----------
         trad = sum(text.count(c) for c in self.traditional_translit)
         mod = sum(text.count(c) for c in self.modern_translit)
         feats['translit_traditional_count'] = float(trad)
@@ -162,7 +151,6 @@ class StyleMatrixExtractor:
         return {k: 0.0 for k in self._names()}
 
     def _names(self):
-        """Feature names in EXACT order extract() produces them."""
         names = [
             'word_count', 'log_word_count', 'char_count', 'log_char_count',
             'sentence_count', 'avg_word_length',
@@ -197,7 +185,6 @@ class SafePipeline:
         self.raw = raw_pipeline
         self.extractor = StyleMatrixExtractor()
 
-        # Detect how many style features the scaler wants
         self.expected_style_features = None
         try:
             if hasattr(raw_pipeline, "scaler") and hasattr(raw_pipeline.scaler, "n_features_in_"):
@@ -218,10 +205,8 @@ class SafePipeline:
         for t in texts:
             f = self.extractor.extract(t)
             vals = [float(f.get(k, 0.0)) for k in names]
-            # Pad with zeros if fewer than expected
             if len(vals) < n_expect:
                 vals = vals + [0.0] * (n_expect - len(vals))
-            # Truncate if more than expected
             elif len(vals) > n_expect:
                 vals = vals[:n_expect]
             rows.append(vals)
@@ -231,22 +216,18 @@ class SafePipeline:
         return arr
 
     def transform(self, texts):
-        # Try the raw pipeline first (works if features happen to match)
         try:
             return self.raw.transform(texts)
         except Exception:
             pass
 
-        # Rebuild with safe style matrix
         style_feats = self._style_matrix(texts)
 
-        # Apply the raw pipeline's scaler
         try:
             scaled = self.raw.scaler.transform(style_feats)
         except Exception:
             scaled = style_feats
 
-        # Apply the raw pipeline's vectorizers
         try:
             word_feats = self.raw.word_tfidf.transform(texts)
         except Exception:
@@ -266,16 +247,44 @@ class SafePipeline:
 
 
 # ============================================================================
-# Inject classes into sys.modules['main'] BEFORE loading any pickle
+# Aliases — so pickle can find `main.Fpipe`, `main.StyleExt`, `main.Tk`, etc.
+# ============================================================================
+Fpipe = SafePipeline
+StyleExt = StyleMatrixExtractor
+Tk = GujaratiTokenizer
+FeaturePipeline = SafePipeline
+GujaratiStyleMatrixExtractor = StyleMatrixExtractor
+
+
+# ============================================================================
+# Inject classes into sys.modules['main'] BEFORE loading any pickle.
+# Uses .get() with a safe fallback to avoid KeyError.
 # ============================================================================
 def _inject_into_main():
     injected = []
+
+    candidates = {
+        # Modern names used in this app
+        "SafePipeline": SafePipeline,
+        "StyleMatrixExtractor": StyleMatrixExtractor,
+        "GujaratiTokenizer": GujaratiTokenizer,
+        # Aliases for training-script names
+        "Fpipe": SafePipeline,
+        "StyleExt": StyleMatrixExtractor,
+        "Tk": GujaratiTokenizer,
+        # Aliases for intermediate versions
+        "FeaturePipeline": SafePipeline,
+        "GujaratiStyleMatrixExtractor": StyleMatrixExtractor,
+    }
+    # Drop any that are None
+    candidates = {k: v for k, v in candidates.items() if v is not None}
+
     for mod_name in ["main", "__main__"]:
         mod = sys.modules.get(mod_name)
         if mod is None:
             continue
-        for cls_name in ["FeaturePipeline", "StyleMatrixExtractor", "GujaratiTokenizer"]:
-            setattr(mod, cls_name, globals()[cls_name])
+        for cls_name, cls in candidates.items():
+            setattr(mod, cls_name, cls)
         injected.append(mod_name)
     return injected
 
@@ -284,8 +293,18 @@ INJECTED_MODULES = _inject_into_main()
 
 if "main" not in sys.modules:
     sys.modules["main"] = sys.modules[__name__]
-    for cls_name in ["FeaturePipeline", "StyleMatrixExtractor", "GujaratiTokenizer"]:
-        setattr(sys.modules["main"], cls_name, globals()[cls_name])
+    for cls_name, cls in {
+        "SafePipeline": SafePipeline,
+        "StyleMatrixExtractor": StyleMatrixExtractor,
+        "GujaratiTokenizer": GujaratiTokenizer,
+        "Fpipe": SafePipeline,
+        "StyleExt": StyleMatrixExtractor,
+        "Tk": GujaratiTokenizer,
+        "FeaturePipeline": SafePipeline,
+        "GujaratiStyleMatrixExtractor": StyleMatrixExtractor,
+    }.items():
+        if cls is not None:
+            setattr(sys.modules["main"], cls_name, cls)
     INJECTED_MODULES.append("main (newly created)")
 
 
